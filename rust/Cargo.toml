@@ -11,5 +11,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # This should be updated to the latest version to avoid build errors.
-pyo3 = { version = "0.21", features = ["extension-module"] }
+pyo3 = { version = "0.27", features = ["extension-module"] }
 faer = "0.17"
