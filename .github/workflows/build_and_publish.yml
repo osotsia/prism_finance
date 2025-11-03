@@ -94,8 +94,6 @@ jobs:
         # the Rust/Python build environment, including Docker for `manylinux` compliance.
         uses: PyO3/maturin-action@v1
         with:
-          # for broad compatibility across different Linux distributions.
-          args: --release --out dist --find-interpreter
           # This input tells the action to build for one specific Python version from the matrix.
           cpython-version: ${{ matrix.cpython-version }}
           args: --release --out dist
