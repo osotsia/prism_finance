@@ -1,6 +1,6 @@
 # Prism: A Verifiable Calculation Engine for Financial Modeling
 
-![CI Status](https://github.com/your-org/prism/actions/workflows/build_and_publish.yml/badge.svg)
+![CI Status](https://github.com/osotsia/prism_finance/actions/workflows/build_and_publish.yml/badge.svg)
 [![PyPI version](https://badge.fury.io/py/prism-finance.svg)](https://badge.fury.io/py/prism-finance)
 
 Prism is a code-first financial modeling framework for building auditable and high-performance models in Python. It is designed for complex financial analysis where transparency, testability, and version control are critical.
