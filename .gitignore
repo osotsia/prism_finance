@@ -84,9 +84,8 @@ htmlcov/
 
 # Cargo.lock is typically committed for applications to ensure reproducible builds,
 # but for libraries like Prism, it is best practice to ignore it. This allows
-
 # downstream users to use the latest compatible versions of dependencies.
-/rust/Cargo.lock
+# /rust/Cargo.lock
 
 
 # =============================================================================

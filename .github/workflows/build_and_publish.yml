@@ -78,7 +78,7 @@ jobs:
     strategy:
       matrix:
         # Define the build matrix for all target OS and architectures
-        platform: [ubuntu-latest, windows-latest, macos-latest]
+        platform: [ubuntu-latest, windows-latest, macos-14]
 
     steps:
       - uses: actions/checkout@v4
