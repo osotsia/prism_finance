@@ -1,0 +1,27 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+# The public-facing name on PyPI
+name = "prism-finance"
+version = "0.1.0"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+
+[tool.maturin]
+# The name of the Python module that will contain the compiled Rust code.
+# This should now be nested under your new package name.
+module-name = "prism_finance._core"
+manifest-path = "rust/Cargo.toml"
+# This remains the same, as our source code is still in the `python/` directory.
+python-source = "python"
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests/python_tests",
+]

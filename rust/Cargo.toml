@@ -1,0 +1,15 @@
+[package]
+# Rename the Rust package for clarity.
+name = "prism_finance_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# The library name must match the package name.
+name = "prism_finance_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+# This should be updated to the latest version to avoid build errors.
+pyo3 = { version = "0.21", features = ["extension-module"] }
+faer = "0.17"

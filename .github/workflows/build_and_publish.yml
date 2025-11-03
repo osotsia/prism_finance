@@ -1,0 +1,130 @@
+# .github/workflows/build_and_publish.yml
+name: Build and Publish Prism
+
+# This workflow is triggered on pushes and pull requests to the main branch,
+# and most importantly, when a new Release is published in GitHub.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+  workflow_dispatch: # Allows manual triggering from the GitHub Actions UI
+
+jobs:
+  # ====================================================================
+  # Job 1: Run Linters and Tests on a single platform for quick feedback
+  # ====================================================================
+  test_and_lint:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ~/.cache/pip
+            rust/target/
+          key: ${{ runner.os }}-cargo-pip-${{ hashFiles('**/Cargo.lock', '**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-pip-
+
+      - name: Run Linters
+        # This is the key fix: execute these commands from within the `rust` directory.
+        working-directory: rust
+        run: |
+          cargo fmt -- --check
+          cargo clippy -- -D warnings
+
+      - name: Install Python dependencies and build for testing
+        run: |
+          pip install pytest maturin
+          maturin build --out dist
+          pip install dist/*.whl
+
+      - name: Run Rust tests
+        # This step must also run from within the `rust` directory.
+        working-directory: rust
+        run: cargo test
+
+      - name: Run Python tests
+        # This step runs from the repository root, which is the default.
+        run: pytest
+
+  # ====================================================================
+  # Job 2: Build binary wheels for all target platforms
+  # ====================================================================
+  build_wheels:
+    name: Build wheels on ${{ matrix.platform }}
+    needs: test_and_lint # This job won't start until tests pass
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      matrix:
+        # Define the build matrix for all target OS and architectures
+        platform: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build binary wheel
+        # This is the key action. It handles all the complexity of setting up
+        # the Rust/Python build environment, including Docker for `manylinux` compliance.
+        uses: PyO3/maturin-action@v1
+        with:
+          # For Linux, build wheels compliant with the manylinux2014 standard
+          # for broad compatibility across different Linux distributions.
+          args: --release --out dist --find-interpreter
+          manylinux: auto
+
+      - name: Upload wheels as a build artifact
+        # This step collects the wheel from each job in the matrix and uploads
+        # it as an artifact, so the final 'publish' job can access them all.
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels
+          path: dist
+
+  # ====================================================================
+  # Job 3: Publish the wheels to PyPI (only on a new release)
+  # ====================================================================
+  publish_to_pypi:
+    name: Publish to PyPI
+    needs: build_wheels # Must wait for all wheels to be built
+    # This is the critical condition: This job ONLY runs when the workflow
+    # was triggered by a "published" release event in GitHub.
+    if: github.event_name == 'release' && github.event.action == 'published'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/prism-finance # Note: Ensure this matches your project name in pyproject.toml
+    permissions:
+      id-token: write # This is required for trusted publishing
+
+    steps:
+      - name: Download all wheels from build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels
+          path: dist
+
+      - name: Publish package to PyPI
+        # This action securely handles uploading all wheels in the 'dist'
+        # directory to PyPI using the trusted publisher mechanism.
+        uses: pypa/gh-action-pypi-publish@v1
