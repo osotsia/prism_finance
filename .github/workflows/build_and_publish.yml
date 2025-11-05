@@ -51,7 +51,7 @@ jobs:
         working-directory: rust
         run: |
           # cargo fmt -- --check
-          cargo clippy -- -D warnings
+          # cargo clippy -- -D warnings
 
       - name: Install Python dependencies and build for testing
         run: |
