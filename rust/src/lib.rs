@@ -10,6 +10,8 @@ mod graph;
 // This brings the Python bindings into scope.
 mod graph_ffi;
 
+mod validation; 
+
 // --- Placeholder function to test the bridge ---
 /// A simple function to confirm the Rust core is callable from Python.
 #[pyfunction]

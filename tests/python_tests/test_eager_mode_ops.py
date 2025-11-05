@@ -5,7 +5,7 @@ def test_rust_bridge_is_accessible():
     A placeholder test to confirm the compiled Rust core
     is importable and callable via the Python wrapper.
     """
-    version = prism_finance.rust_core_version()
+    version = prism_finance._core.rust_core_version()
     assert version == "0.1.0-alpha"
     assert isinstance(version, str)
 

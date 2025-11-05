@@ -12,7 +12,7 @@ use petgraph::{algo::toposort, stable_graph::StableDiGraph};
 // ensure that node indices remain stable even after removals.
 #[derive(Debug, Clone, Default)]
 pub struct ComputationGraph {
-    graph: StableDiGraph<Node, Edge>,
+    pub(crate) graph: StableDiGraph<Node, Edge>,
 }
 
 impl ComputationGraph {
@@ -94,7 +94,9 @@ mod tests {
         graph.add_dependency(node_a, node_c, Edge::Arithmetic);
         graph.add_dependency(node_b, node_c, Edge::Arithmetic);
 
-        let order = graph.topological_order().expect("Topological sort should succeed for a valid DAG");
+        let order = graph
+            .topological_order()
+            .expect("Topological sort should succeed for a valid DAG");
 
         // Assert that the order is correct. A and B can appear in any order,
         // but C must be last.
@@ -116,9 +118,15 @@ mod tests {
         let mut graph = ComputationGraph::new();
 
         // Define nodes
-        let node_a = graph.add_node(Node::SolverVariable { meta: NodeMetadata::default() });
-        let node_b = graph.add_node(Node::SolverVariable { meta: NodeMetadata::default() });
-        let node_c = graph.add_node(Node::SolverVariable { meta: NodeMetadata::default() });
+        let node_a = graph.add_node(Node::SolverVariable {
+            meta: NodeMetadata::default(),
+        });
+        let node_b = graph.add_node(Node::SolverVariable {
+            meta: NodeMetadata::default(),
+        });
+        let node_c = graph.add_node(Node::SolverVariable {
+            meta: NodeMetadata::default(),
+        });
 
         // Define dependencies that form a cycle
         graph.add_dependency(node_a, node_b, Edge::Arithmetic);
@@ -127,21 +135,33 @@ mod tests {
 
         let result = graph.topological_order();
 
-        assert!(result.is_err(), "Topological sort must fail for a cyclic graph");
+        assert!(
+            result.is_err(),
+            "Topological sort must fail for a cyclic graph"
+        );
     }
 
     /// Test case: Verifies adding and retrieving nodes by ID.
     #[test]
     fn add_and_get_node() {
         let mut graph = ComputationGraph::new();
-        let meta = NodeMetadata { name: "Test Node".to_string(), ..Default::default() };
-        let node_data = Node::Constant { value: vec![1.0], meta: meta.clone() };
+        let meta = NodeMetadata {
+            name: "Test Node".to_string(),
+            ..Default::default()
+        };
+        let node_data = Node::Constant {
+            value: vec![1.0],
+            meta: meta.clone(),
+        };
 
         let node_id = graph.add_node(node_data.clone());
         let retrieved_node = graph.get_node(node_id).expect("Node should be retrievable");
 
         // Using PartialEq on Node enum to verify correctness
-        assert_eq!(*retrieved_node, node_data, "Retrieved node data does not match original");
+        assert_eq!(
+            *retrieved_node, node_data,
+            "Retrieved node data does not match original"
+        );
     }
 
     /// Test case: Verifies behavior on a disconnected graph.
@@ -152,10 +172,18 @@ mod tests {
     fn topological_sort_on_disconnected_graph() {
         let mut graph = ComputationGraph::new();
 
-        graph.add_node(Node::Constant { value: vec![1.0], meta: NodeMetadata::default() });
-        graph.add_node(Node::Constant { value: vec![2.0], meta: NodeMetadata::default() });
+        graph.add_node(Node::Constant {
+            value: vec![1.0],
+            meta: NodeMetadata::default(),
+        });
+        graph.add_node(Node::Constant {
+            value: vec![2.0],
+            meta: NodeMetadata::default(),
+        });
 
-        let order = graph.topological_order().expect("Sort should succeed on disconnected graph");
+        let order = graph
+            .topological_order()
+            .expect("Sort should succeed on disconnected graph");
 
         assert_eq!(order.len(), 2, "Should include all nodes");
     }
@@ -170,11 +198,29 @@ mod tests {
     fn topological_sort_on_multi_level_dag() {
         let mut graph = ComputationGraph::new();
 
-        let node_a = graph.add_node(Node::Constant { value: vec![], meta: Default::default() });
-        let node_b = graph.add_node(Node::Constant { value: vec![], meta: Default::default() });
-        let node_c = graph.add_node(Node::Formula { op: Operation::Add, parents: vec![node_b], meta: Default::default() });
-        let node_d = graph.add_node(Node::Formula { op: Operation::Add, parents: vec![node_a], meta: Default::default() });
-        let node_e = graph.add_node(Node::Formula { op: Operation::Add, parents: vec![node_c, node_d], meta: Default::default() });
+        let node_a = graph.add_node(Node::Constant {
+            value: vec![],
+            meta: Default::default(),
+        });
+        let node_b = graph.add_node(Node::Constant {
+            value: vec![],
+            meta: Default::default(),
+        });
+        let node_c = graph.add_node(Node::Formula {
+            op: Operation::Add,
+            parents: vec![node_b],
+            meta: Default::default(),
+        });
+        let node_d = graph.add_node(Node::Formula {
+            op: Operation::Add,
+            parents: vec![node_a],
+            meta: Default::default(),
+        });
+        let node_e = graph.add_node(Node::Formula {
+            op: Operation::Add,
+            parents: vec![node_c, node_d],
+            meta: Default::default(),
+        });
 
         graph.add_dependency(node_a, node_d, Edge::Arithmetic);
         graph.add_dependency(node_b, node_c, Edge::Arithmetic);

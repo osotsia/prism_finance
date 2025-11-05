@@ -51,20 +51,47 @@ class Canvas:
         # Instantiate the Rust graph object from the `_core` module
         self._graph = _core._ComputationGraph()
 
-    def add_var(self, value: Union[int, float, List[float]], name: str) -> Var:
+    # --- UPDATED METHOD ---
+    def add_var(
+        self,
+        value: Union[int, float, List[float]],
+        name: str,
+        *, # Makes subsequent arguments keyword-only
+        unit: str = None,
+        temporal_type: str = None,
+    ) -> Var:
         """
-        Adds a new constant variable to the graph.
+        Adds a new constant variable to the graph with optional type metadata.
 
         Args:
-            value: The constant value. Can be a single number or a list for a time series.
+            value: The constant value.
             name: A human-readable name for the variable.
-
+            unit: The unit of measurement (e.g., "USD", "kW").
+            temporal_type: The temporal type ("Stock" or "Flow").
+        
         Returns:
             A `Var` object representing this new variable.
         """
         val_list = [float(value)] if isinstance(value, (int, float)) else [float(v) for v in value]
-        node_id = self._graph.add_constant_node(value=val_list, name=name)
+        
+        # NOTE: The FFI layer `add_constant_node` must be updated to accept this metadata.
+        # This change is included in the next step.
+        node_id = self._graph.add_constant_node(
+            value=val_list,
+            name=name,
+            unit=unit,
+            temporal_type=temporal_type
+        )
         return Var(canvas=self, node_id=node_id, name=name)
+    
+    # --- NEW METHOD ---
+    def validate(self) -> None:
+        """
+        Performs static analysis on the graph.
+        
+        Raises `ValueError` if any logical inconsistencies are found.
+        """
+        self._graph.validate()
 
     def get_evaluation_order(self) -> List[int]:
         """
