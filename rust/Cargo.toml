@@ -7,9 +7,14 @@ edition = "2021"
 [lib]
 # The library name must match the package name.
 name = "prism_finance_core"
-crate-type = ["cdylib"]
+
+# "cdylib" is for the Python extension via maturin.
+# "rlib" is for the native Rust toolchain, including `cargo test` and `cargo build`.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# This should be updated to the latest version to avoid build errors.
-pyo3 = { version = "0.27", features = ["extension-module"] }
+petgraph = "0.6.4"
+pyo3 = { version = "0.27", features = ["extension-module"] } # 0.27 really is the current version
 faer = "0.17"
+
+[dev-dependencies]

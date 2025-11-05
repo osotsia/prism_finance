@@ -1,8 +1,3 @@
-# tests/python_tests/test_eager_mode_ops.py
-
-# Change this line:
-# import prism
-# to this:
 import prism_finance
 
 def test_rust_bridge_is_accessible():
