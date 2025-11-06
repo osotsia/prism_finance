@@ -5,7 +5,7 @@ use crate::graph::{
     edge::Edge,
     node::{Node, NodeId, NodeMetadata, Operation, TemporalType, Unit},
 };
-use crate::validation::Validator;
+use crate::type_system::TypeChecker;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -110,8 +110,8 @@ impl PyComputationGraph {
 
     #[pyo3(name = "validate")]
     pub fn py_validate(&self) -> PyResult<()> {
-        let validator = Validator::new(&self.graph);
-        match validator.validate() {
+        let mut checker = TypeChecker::new(&self.graph);
+        match checker.check_and_infer() {
             Ok(()) => Ok(()),
             Err(errors) => {
                 let first_error = &errors[0];

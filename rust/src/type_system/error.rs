@@ -1,16 +1,16 @@
-//! Defines the error types for the validation module.
+//! Defines the error types for the type system module.
 use crate::graph::NodeId;
+use petgraph::algo::Cycle;
 
 /// The specific category of a validation error.
-///
-// This enum allows for programmatic inspection of errors, which is more
-// robust than string matching on the error message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationErrorType {
     /// An error related to mismatched temporal types (e.g., adding two `Stock`s).
     TemporalMismatch,
     /// An error related to incompatible units (e.g., adding `USD` to `EUR`).
     UnitMismatch,
+    /// A structural error in the graph itself, such as a cycle.
+    Structural,
 }
 
 /// A structured error report from the static analysis engine.
@@ -22,4 +22,19 @@ pub struct ValidationError {
     pub error_type: ValidationErrorType,
     /// A human-readable message explaining the error.
     pub message: String,
+}
+
+impl ValidationError {
+    /// Helper to create a validation error from a graph cycle.
+    pub fn from_cycle(cycle: Cycle<NodeId>) -> Self {
+        let node_id = cycle.node_id();
+        Self {
+            node_id,
+            error_type: ValidationErrorType::Structural,
+            message: format!(
+                "Structural Error: Graph contains a cycle. Node {} depends on itself.",
+                node_id.index()
+            ),
+        }
+    }
 }
