@@ -1,75 +1,63 @@
 """
-A basic example demonstrating the construction of a computation graph.
+A basic example demonstrating the construction and analysis of a computation graph.
 """
 import sys
 import os
 
-# Add the project root to the Python path to allow importing `prism_finance`
-# This is for demonstration purposes. In a real scenario, the package would be installed.
+# Add the project root to the Python path for local execution.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from prism_finance import Canvas, Var
 
 
-def demonstrate_valid_graph():
-    """Builds and analyzes a simple, valid Directed Acyclic Graph (DAG)."""
-    print("--- Demonstrating Valid Graph ---")
+def demonstrate_graph_operations():
+    """Builds and analyzes a simple graph using the public API."""
+    print("--- Demonstrating Graph Operations ---")
 
     # The Canvas is the container for our model
     model = Canvas()
 
-    # Use the canvas to create constant variables (nodes)
+    # Create constant variables (nodes) using the Canvas factory method
     revenue = model.add_var(100.0, name="Revenue")
     costs = model.add_var(40.0, name="Costs")
+    units_sold = model.add_var(10.0, name="Units Sold")
+    initial_balance = model.add_var(1000.0, name="Initial Balance")
 
-    # The '+' operator is overloaded to create a new formula node
-    # and automatically add the dependencies in the graph.
-    profit = revenue + costs
-    profit._name = "Profit"  # Manually assign a cleaner name for demonstration
+    # --- 1. Arithmetic Operations ---
+    # The standard operators (+, -, *, /) are overloaded to build the graph.
+    # Node names are automatically generated for clarity.
+    gross_profit = revenue - costs
+    price_per_unit = revenue / units_sold
 
     print(f"Graph constructed with {model.node_count} nodes.")
-    print(f"Nodes are: {revenue}, {costs}, {profit}")
 
+    # --- 2. Time-Series (.prev) Operation ---
+    # The .prev() method creates a node that lags another, with a specified default.
+    # This correctly builds a graph with semantic Temporal and DefaultValue edges.
+    closing_balance = gross_profit.prev(default=initial_balance) + gross_profit
+
+    print(f"\nExample Nodes:")
+    print(f"  - Gross Profit: {gross_profit}")
+    print(f"  - Price Per Unit: {price_per_unit}")
+    print(f"  - Closing Balance: {closing_balance}")
+
+    # --- 3. Graph Analysis ---
+    # The core can compute a valid evaluation order (topological sort).
+    # This detects structural errors like circular dependencies.
     try:
-        # Get the evaluation order from the Rust core
         order = model.get_evaluation_order()
         print(f"\nValid evaluation order (by node ID): {order}")
-        print("This means 'Profit' (id=2) must be calculated after 'Revenue' (id=0) and 'Costs' (id=1).")
+        print("This confirms the graph is a valid DAG and can be computed.")
+
+        # Find the position of key nodes in the evaluation order
+        pos_revenue = order.index(revenue._node_id)
+        pos_profit = order.index(gross_profit._node_id)
+        assert pos_revenue < pos_profit
+        print(f"  - 'Revenue' (pos {pos_revenue}) is correctly calculated before 'Gross Profit' (pos {pos_profit}).")
+
     except ValueError as e:
-        print(f"\nError: {e}")
-
-
-def demonstrate_cyclic_graph():
-    """Builds an invalid graph with a cycle to test error handling."""
-    print("\n--- Demonstrating Cyclic Graph ---")
-
-    # NOTE: The current high-level Python API makes it difficult to
-    # create a cycle intentionally, which is a design feature.
-    # To demonstrate the Rust core's cycle detection, we would need to
-    # use the low-level `_core` API directly. This example shows
-    # that the user-facing API provides a degree of safety.
-
-    model = Canvas()
-    a = model.add_var(1, name="A")
-
-    # We can simulate creating a cycle for testing purposes by using internal APIs
-    # This is not something a normal user would do.
-    # Let's create a formula B = A + A (no cycle)
-    b = a + a
-
-    # Now, let's manually create a forbidden dependency from B back to A
-    print("Intentionally creating a cycle by adding a dependency from B -> A...")
-    try:
-        model._graph.add_dependency(parent_idx=b._node_id, child_idx=a._node_id)
-
-        # This line should now raise a ValueError from the Rust core
-        model.get_evaluation_order()
-    except ValueError as e:
-        print(f"Successfully caught expected error: {e}")
-    except Exception as e:
-        print(f"Caught an unexpected error type: {type(e).__name__} - {e}")
+        print(f"\nCaught an unexpected error: {e}")
 
 
 if __name__ == "__main__":
-    demonstrate_valid_graph()
-    demonstrate_cyclic_graph()
+    demonstrate_graph_operations()

@@ -51,10 +51,7 @@ pub enum Operation {
     ///
     /// The `default_node` provides the value for initial periods where
     /// a lagged value is not yet available.
-    PreviousValue {
-        lag: u32,
-        default_node: NodeId,
-    },
+    PreviousValue { lag: u32, default_node: NodeId },
 }
 
 /// The primary enum representing a node in the computation graph.
@@ -63,8 +60,9 @@ pub enum Operation {
 /// but does not hold the computed values themselves (which are managed by the `computation::Ledger`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
-    /// An input variable with a fixed time-series value.
-    Constant { value: Vec<f64>, meta: NodeMetadata },
+    /// An input variable. Its value is stored separately in the `ComputationGraph`
+    /// in a columnar format for performance.
+    Constant { meta: NodeMetadata },
     /// A calculated variable, derived from one or more parent nodes.
     Formula {
         op: Operation,

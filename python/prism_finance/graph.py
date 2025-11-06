@@ -1,7 +1,7 @@
 """
 Defines the user-facing graph construction API (Canvas and Var).
 """
-from typing import List, Union
+from typing import List, Union, overload
 from . import _core  # Import the compiled Rust extension module
 
 
@@ -19,63 +19,79 @@ class Var:
     def __repr__(self) -> str:
         return f"Var(name='{self._name}', id={self._node_id})"
 
-    def __add__(self, other: 'Var') -> 'Var':
-        """Overloads the '+' operator to build the graph."""
-        if self._canvas is not other._canvas:
-            raise ValueError("Cannot perform operations on Vars from different Canvases.")
+    def _create_binary_op(self, other: 'Var', op_name: str, op_symbol: str) -> 'Var':
+        """Helper method to create a new Var from a binary operation."""
+        if not isinstance(other, Var) or self._canvas is not other._canvas:
+            raise ValueError("Operations are only supported between Vars from the same Canvas.")
 
-        # 1. Create a new formula node in the Rust graph
-        new_name = f"({self._name} + {other._name})"
-        child_id = self._canvas._graph.add_formula_add(
+        new_name = f"({self._name} {op_symbol} {other._name})"
+        
+        # Dynamically get the correct FFI method (e.g., 'add_formula_add')
+        ffi_method = getattr(self._canvas._graph, f"add_formula_{op_name}")
+        
+        # The FFI call is now atomic, creating the node and its dependencies.
+        child_id = ffi_method(
             parents=[self._node_id, other._node_id],
             name=new_name
         )
+        return Var(canvas=self._canvas, node_id=child_id, name=new_name)
 
-        # 2. Add dependencies from parents to the new child node
-        self._canvas._graph.add_dependency(self._node_id, child_id)
-        self._canvas._graph.add_dependency(other._node_id, child_id)
+    def __add__(self, other: 'Var') -> 'Var':
+        return self._create_binary_op(other, "add", "+")
 
-        # 3. Return a new Var representing the result
+    def __sub__(self, other: 'Var') -> 'Var':
+        return self._create_binary_op(other, "subtract", "-")
+
+    def __mul__(self, other: 'Var') -> 'Var':
+        return self._create_binary_op(other, "multiply", "*")
+
+    def __truediv__(self, other: 'Var') -> 'Var':
+        return self._create_binary_op(other, "divide", "/")
+
+    def prev(self, lag: int = 1, *, default: 'Var') -> 'Var':
+        """
+        Creates a new Var that represents the value of this Var in a previous period.
+        
+        Args:
+            lag: The number of periods to look back (default is 1).
+            default: The Var to use as a value for the initial periods.
+        """
+        if not isinstance(default, Var) or self._canvas is not default._canvas:
+            raise ValueError("Default for .prev() must be a Var from the same Canvas.")
+        if not isinstance(lag, int) or lag < 1:
+            raise ValueError("Lag must be a positive integer.")
+
+        new_name = f"{self._name}.prev(lag={lag})"
+        child_id = self._canvas._graph.add_formula_previous_value(
+            main_parent_idx=self._node_id,
+            default_parent_idx=default._node_id,
+            lag=lag,
+            name=new_name
+        )
         return Var(canvas=self._canvas, node_id=child_id, name=new_name)
 
 
 class Canvas:
     """
     The main container for a financial model's computation graph.
-
-    Acts as a factory for `Var` objects and an interface to the
-    underlying Rust calculation engine.
     """
 
     def __init__(self):
-        # Instantiate the Rust graph object from the `_core` module
         self._graph = _core._ComputationGraph()
 
-    # --- UPDATED METHOD ---
     def add_var(
         self,
         value: Union[int, float, List[float]],
         name: str,
-        *, # Makes subsequent arguments keyword-only
+        *, 
         unit: str = None,
         temporal_type: str = None,
     ) -> Var:
         """
         Adds a new constant variable to the graph with optional type metadata.
-
-        Args:
-            value: The constant value.
-            name: A human-readable name for the variable.
-            unit: The unit of measurement (e.g., "USD", "kW").
-            temporal_type: The temporal type ("Stock" or "Flow").
-        
-        Returns:
-            A `Var` object representing this new variable.
         """
         val_list = [float(value)] if isinstance(value, (int, float)) else [float(v) for v in value]
         
-        # NOTE: The FFI layer `add_constant_node` must be updated to accept this metadata.
-        # This change is included in the next step.
         node_id = self._graph.add_constant_node(
             value=val_list,
             name=name,
@@ -84,25 +100,18 @@ class Canvas:
         )
         return Var(canvas=self, node_id=node_id, name=name)
     
-    # --- NEW METHOD ---
     def validate(self) -> None:
         """
         Performs static analysis on the graph.
-        
-        Raises `ValueError` if any logical inconsistencies are found.
         """
         self._graph.validate()
 
     def get_evaluation_order(self) -> List[int]:
         """
-        Computes and returns a valid evaluation order for all nodes.
-
-        Raises:
-            ValueError: If the model contains a circular dependency.
+        Computes a valid evaluation order for all nodes.
         """
         return self._graph.topological_order()
 
     @property
     def node_count(self) -> int:
-        """Returns the total number of nodes in the graph."""
         return self._graph.node_count()
