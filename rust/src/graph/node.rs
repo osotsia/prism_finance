@@ -76,3 +76,18 @@ pub enum Node {
     /// A placeholder for a variable whose value is determined by the solver.
     SolverVariable { meta: NodeMetadata },
 }
+
+impl Node {
+    /// Returns a reference to the node's metadata.
+    ///
+    /// This helper provides a single, unified way to access metadata,
+    /// regardless of the node's variant, simplifying validation and other
+    /// graph-walking logic.
+    pub fn meta(&self) -> &NodeMetadata {
+        match self {
+            Node::Constant { meta, .. } => meta,
+            Node::Formula { meta, .. } => meta,
+            Node::SolverVariable { meta } => meta,
+        }
+    }
+}

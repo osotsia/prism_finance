@@ -1,9 +1,8 @@
 //! Validation rule for temporal consistency (Stock vs. Flow).
 
-use crate::graph::{Node, NodeId, NodeMetadata, Operation, TemporalType};
+use crate::graph::{Edge, Node, NodeId, TemporalType};
 use crate::validation::error::{ValidationError, ValidationErrorType};
 use petgraph::prelude::StableDiGraph;
-use crate::graph::Edge;
 
 /// "The Accountant's Ledger Rule": Ensures that stocks and flows are combined logically.
 ///
@@ -17,41 +16,40 @@ pub(crate) fn validate_temporal(
     node_id: NodeId,
     node: &Node,
 ) -> Option<ValidationError> {
-    if let Node::Formula { op: Operation::Add | Operation::Subtract, parents, .. } = node {
-        // Collect the temporal types of all parent nodes.
-        let parent_types: Vec<Option<&TemporalType>> = parents
+    // This rule only applies to addition and subtraction formulas.
+    let parents = match node {
+        Node::Formula { op, parents, .. }
+            if *op == crate::graph::Operation::Add || *op == crate::graph::Operation::Subtract =>
+        {
+            parents
+        }
+        _ => return None, // Not an Add/Subtract formula, so the rule doesn't apply.
+    };
+
+    // Find all parent nodes that are explicitly typed as 'Stock'.
+    let stock_parents: Vec<&Node> = parents
+        .iter()
+        .filter_map(|id| graph.node_weight(*id)) // Get the parent Node struct.
+        .filter(|p| p.meta().temporal_type == Some(TemporalType::Stock))
+        .collect();
+
+    // The core validation logic: if more than one parent is a stock, it's an error.
+    if stock_parents.len() > 1 {
+        // Collect the names for a clear error message.
+        let stock_parent_names: Vec<String> = stock_parents
             .iter()
-            .filter_map(|&p_id| graph.node_weight(p_id))
-            .map(|p_node| match p_node {
-                Node::Constant { meta, .. } => meta.temporal_type.as_ref(),
-                Node::Formula { meta, .. } => meta.temporal_type.as_ref(),
-                Node::SolverVariable { meta } => meta.temporal_type.as_ref(),
-            })
+            .map(|p| p.meta().name.clone())
             .collect();
 
-        // Check for the invalid "Stock + Stock" or "Stock - Stock" operation.
-        let stock_count = parent_types.iter().filter(|&&t| t == Some(&TemporalType::Stock)).count();
-
-        if stock_count > 1 {
-            let parent_names: Vec<String> = parents
-                .iter()
-                .filter_map(|&p_id| graph.node_weight(p_id))
-                .map(|p_node| match p_node {
-                     Node::Constant { meta, .. } => meta.name.clone(),
-                     Node::Formula { meta, .. } => meta.name.clone(),
-                     Node::SolverVariable { meta } => meta.name.clone(),
-                })
-                .collect();
-            
-            return Some(ValidationError {
-                node_id,
-                error_type: ValidationErrorType::TemporalMismatch,
-                message: format!(
-                    "Temporal Error: Attempted to add or subtract multiple 'Stock' variables ({:?}). Stocks represent points in time and cannot be summed directly.",
-                    parent_names
-                ),
-            });
-        }
+        return Some(ValidationError {
+            node_id,
+            error_type: ValidationErrorType::TemporalMismatch,
+            message: format!(
+                "Temporal Error: Attempted to add or subtract multiple 'Stock' variables ({:?}). Stocks represent points in time and cannot be summed directly.",
+                stock_parent_names
+            ),
+        });
     }
+
     None
 }
