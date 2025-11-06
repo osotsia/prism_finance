@@ -64,178 +64,81 @@ impl ComputationGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::node::{NodeMetadata, Operation};
+    use crate::graph::node::NodeMetadata;
+    use rstest::rstest;
 
-    /// Test case: Verifies that a simple, valid DAG produces the correct topological order.
-    ///
-    /// Graph structure:
-    ///   A (const) -> C (formula)
-    ///   B (const) -> C (formula)
-    #[test]
-    fn topological_sort_on_valid_dag_succeeds() {
-        let mut graph = ComputationGraph::new();
-
-        // Define nodes
-        let node_a = graph.add_node(Node::Constant {
-            value: vec![10.0],
-            meta: NodeMetadata::default(),
-        });
-        let node_b = graph.add_node(Node::Constant {
-            value: vec![20.0],
-            meta: NodeMetadata::default(),
-        });
-        let node_c = graph.add_node(Node::Formula {
-            op: Operation::Add,
-            parents: vec![node_a, node_b],
-            meta: NodeMetadata::default(),
-        });
-
-        // Define dependencies
-        graph.add_dependency(node_a, node_c, Edge::Arithmetic);
-        graph.add_dependency(node_b, node_c, Edge::Arithmetic);
-
-        let order = graph
-            .topological_order()
-            .expect("Topological sort should succeed for a valid DAG");
-
-        // Assert that the order is correct. A and B can appear in any order,
-        // but C must be last.
-        assert_eq!(order.len(), 3, "Order should contain all three nodes");
-        let pos_c = order.iter().position(|&id| id == node_c).unwrap();
-        let pos_a = order.iter().position(|&id| id == node_a).unwrap();
-        let pos_b = order.iter().position(|&id| id == node_b).unwrap();
-
-        assert!(pos_c > pos_a, "Node C must be evaluated after Node A");
-        assert!(pos_c > pos_b, "Node C must be evaluated after Node B");
+    // --- 1. Refined Test Data Structures ---
+    // Using a tuple variant for `Success` makes test case definitions much more concise.
+    #[derive(Debug)]
+    enum Expectation {
+        /// Sort should succeed. Contains `(expected_node_count, order_assertions)`.
+        Success(usize, Vec<(usize, usize)>),
+        /// Sort should fail due to a cycle.
+        Cycle,
     }
 
-    /// Test case: Verifies that cycle detection works correctly.
-    ///
-    /// Graph structure:
-    ///   A -> B -> C -> A (a direct cycle)
-    #[test]
-    fn topological_sort_on_cyclic_graph_fails() {
+    // --- 2. The Parameterized Test Function ---
+    #[rstest]
+    #[case("Valid simple DAG",     3, vec![(0, 2), (1, 2)],         Expectation::Success(3, vec![(0, 2), (1, 2)]))] // A->C, B->C
+    #[case("Cyclic graph",         3, vec![(0, 1), (1, 2), (2, 0)], Expectation::Cycle)] // A->B->C->A
+    #[case("Disconnected graph",   2, vec![],                       Expectation::Success(2, vec![]))]
+    #[case("Multi-level DAG",      5, vec![(0, 3), (1, 2), (2, 4), (3, 4)], Expectation::Success(5, vec![(0, 3), (1, 2), (2, 4), (3, 4)]))] // A->D->E, B->C->E
+    #[case("Linear chain",         4, vec![(0, 1), (1, 2), (2, 3)], Expectation::Success(4, vec![(0, 1), (1, 2), (2, 3)]))] // A->B->C->D
+    fn test_topological_sort_scenarios(
+        #[case] name: &str,
+        #[case] num_nodes: usize,
+        #[case] edges: Vec<(usize, usize)>,
+        #[case] expectation: Expectation,
+    ) {
+        // --- Setup ---
         let mut graph = ComputationGraph::new();
+        let node_ids: Vec<NodeId> = (0..num_nodes)
+            .map(|_| graph.add_node(Node::Constant { value: vec![], meta: Default::default() }))
+            .collect();
+        for &(from_idx, to_idx) in &edges {
+            graph.add_dependency(node_ids[from_idx], node_ids[to_idx], Edge::Arithmetic);
+        }
 
-        // Define nodes
-        let node_a = graph.add_node(Node::SolverVariable {
-            meta: NodeMetadata::default(),
-        });
-        let node_b = graph.add_node(Node::SolverVariable {
-            meta: NodeMetadata::default(),
-        });
-        let node_c = graph.add_node(Node::SolverVariable {
-            meta: NodeMetadata::default(),
-        });
-
-        // Define dependencies that form a cycle
-        graph.add_dependency(node_a, node_b, Edge::Arithmetic);
-        graph.add_dependency(node_b, node_c, Edge::Arithmetic);
-        graph.add_dependency(node_c, node_a, Edge::Arithmetic); // This edge creates the cycle
-
+        // --- Execution ---
         let result = graph.topological_order();
 
-        assert!(
-            result.is_err(),
-            "Topological sort must fail for a cyclic graph"
-        );
+        // --- Assertion ---
+        match expectation {
+            Expectation::Success(expected_node_count, order_assertions) => {
+                // If success is expected, the result must be Ok.
+                let order = result.unwrap_or_else(|e| {
+                    panic!("[{}] Expected success, but sort failed with: {:?}", name, e)
+                });
+
+                assert_eq!(order.len(), expected_node_count, "[{}] Incorrect node count.", name);
+
+                for &(before_idx, after_idx) in &order_assertions {
+                    let pos_before = order.iter().position(|&id| id == node_ids[before_idx]).unwrap();
+                    let pos_after = order.iter().position(|&id| id == node_ids[after_idx]).unwrap();
+                    assert!(
+                        pos_before < pos_after,
+                        "[{}] Order violation: {} should be before {}.", name, before_idx, after_idx
+                    );
+                }
+            }
+            Expectation::Cycle => {
+                // If a cycle is expected, the result must be Err.
+                assert!(result.is_err(), "[{}] Expected a cycle, but sort succeeded.", name);
+            }
+        }
     }
 
-    /// Test case: Verifies adding and retrieving nodes by ID.
+    /// This test is kept separate as it validates data integrity, not graph topology.
+    /// Verifies adding and retrieving nodes by ID.
     #[test]
     fn add_and_get_node() {
         let mut graph = ComputationGraph::new();
-        let meta = NodeMetadata {
-            name: "Test Node".to_string(),
-            ..Default::default()
-        };
-        let node_data = Node::Constant {
-            value: vec![1.0],
-            meta: meta.clone(),
-        };
+        let meta = NodeMetadata { name: "Test Node".to_string(), ..Default::default() };
+        let node_data = Node::Constant { value: vec![1.0], meta: meta.clone() };
 
         let node_id = graph.add_node(node_data.clone());
         let retrieved_node = graph.get_node(node_id).expect("Node should be retrievable");
 
-        // Using PartialEq on Node enum to verify correctness
-        assert_eq!(
-            *retrieved_node, node_data,
-            "Retrieved node data does not match original"
-        );
-    }
-
-    /// Test case: Verifies behavior on a disconnected graph.
-    ///
-    /// Graph structure:
-    ///   A, B (no edges)
-    #[test]
-    fn topological_sort_on_disconnected_graph() {
-        let mut graph = ComputationGraph::new();
-
-        graph.add_node(Node::Constant {
-            value: vec![1.0],
-            meta: NodeMetadata::default(),
-        });
-        graph.add_node(Node::Constant {
-            value: vec![2.0],
-            meta: NodeMetadata::default(),
-        });
-
-        let order = graph
-            .topological_order()
-            .expect("Sort should succeed on disconnected graph");
-
-        assert_eq!(order.len(), 2, "Should include all nodes");
-    }
-
-    /// Test case: A more complex, multi-level DAG.
-    ///
-    /// Graph structure:
-    ///   A ---v
-    ///        D -> E
-    ///   B -> C ---^
-    #[test]
-    fn topological_sort_on_multi_level_dag() {
-        let mut graph = ComputationGraph::new();
-
-        let node_a = graph.add_node(Node::Constant {
-            value: vec![],
-            meta: Default::default(),
-        });
-        let node_b = graph.add_node(Node::Constant {
-            value: vec![],
-            meta: Default::default(),
-        });
-        let node_c = graph.add_node(Node::Formula {
-            op: Operation::Add,
-            parents: vec![node_b],
-            meta: Default::default(),
-        });
-        let node_d = graph.add_node(Node::Formula {
-            op: Operation::Add,
-            parents: vec![node_a],
-            meta: Default::default(),
-        });
-        let node_e = graph.add_node(Node::Formula {
-            op: Operation::Add,
-            parents: vec![node_c, node_d],
-            meta: Default::default(),
-        });
-
-        graph.add_dependency(node_a, node_d, Edge::Arithmetic);
-        graph.add_dependency(node_b, node_c, Edge::Arithmetic);
-        graph.add_dependency(node_c, node_e, Edge::Arithmetic);
-        graph.add_dependency(node_d, node_e, Edge::Arithmetic);
-
-        let order = graph.topological_order().expect("Sort should succeed");
-
-        assert_eq!(order.len(), 5);
-
-        let pos = |id| order.iter().position(|&n| n == id).unwrap();
-
-        assert!(pos(node_c) > pos(node_b));
-        assert!(pos(node_d) > pos(node_a));
-        assert!(pos(node_e) > pos(node_c));
-        assert!(pos(node_e) > pos(node_d));
+        assert_eq!(*retrieved_node, node_data, "Retrieved node data does not match original");
     }
 }

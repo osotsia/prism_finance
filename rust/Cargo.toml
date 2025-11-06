@@ -18,3 +18,4 @@ pyo3 = { version = "0.27", features = ["extension-module"] } # 0.27 really is th
 faer = "0.17"
 
 [dev-dependencies]
+rstest = "0.21.0"
