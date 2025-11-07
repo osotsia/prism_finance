@@ -3,25 +3,35 @@ use crate::graph::{NodeMetadata, Operation, TemporalType};
 use crate::type_system::error::{ValidationError, ValidationErrorType};
 
 /// Infers the temporal type of a formula or returns a validation error.
-/// This rule is now more permissive, allowing Stock + Stock operations.
 pub(crate) fn infer_and_validate(
     op: &Operation,
     parents: &[NodeMetadata],
 ) -> Result<Option<TemporalType>, ValidationError> {
     match op {
         Operation::Add | Operation::Subtract => {
-            let has_stock = parents
+            let stock_count = parents
                 .iter()
-                .any(|m| m.temporal_type == Some(TemporalType::Stock));
-            let has_flow = parents
-                .iter()
-                .any(|m| m.temporal_type == Some(TemporalType::Flow));
+                .filter(|m| m.temporal_type == Some(TemporalType::Stock))
+                .count();
 
-            if has_stock {
-                // Any operation involving a Stock results in a Stock (e.g., Balance + P&L Item -> New Balance).
+            let flow_count = parents
+                .iter()
+                .filter(|m| m.temporal_type == Some(TemporalType::Flow))
+                .count();
+
+            if stock_count > 1 {
+                // Disallow Stock + Stock, as it is ambiguous.
+                Err(ValidationError {
+                    node_id: Default::default(), // Orchestrator will set this.
+                    node_name: String::new(),
+                    error_type: ValidationErrorType::TemporalMismatch,
+                    message: "Temporal Error: Addition or subtraction of more than one 'Stock' type is ambiguous and not permitted.".into(),
+                })
+            } else if stock_count == 1 {
+                // Stock + Flow -> Stock (e.g., Opening Balance + Net Income -> Closing Balance).
                 Ok(Some(TemporalType::Stock))
-            } else if has_flow {
-                // If there are no Stocks but there are Flows, the result is a Flow.
+            } else if flow_count > 0 {
+                // Flow + Flow -> Flow.
                 Ok(Some(TemporalType::Flow))
             } else {
                 // No typed parents, so no inferred type.

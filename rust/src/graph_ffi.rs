@@ -104,20 +104,26 @@ impl PyComputationGraph {
         }
     }
 
-    pub fn add_formula_add(&mut self, parents: Vec<usize>, name: String) -> usize {
-        self.add_binary_formula(Operation::Add, parents, name)
-    }
-
-    pub fn add_formula_subtract(&mut self, parents: Vec<usize>, name: String) -> usize {
-        self.add_binary_formula(Operation::Subtract, parents, name)
-    }
-
-    pub fn add_formula_multiply(&mut self, parents: Vec<usize>, name: String) -> usize {
-        self.add_binary_formula(Operation::Multiply, parents, name)
-    }
-
-    pub fn add_formula_divide(&mut self, parents: Vec<usize>, name: String) -> usize {
-        self.add_binary_formula(Operation::Divide, parents, name)
+    #[pyo3(name = "add_binary_formula")]
+    pub fn py_add_binary_formula(
+        &mut self,
+        op_name: &str,
+        parents: Vec<usize>,
+        name: String,
+    ) -> PyResult<usize> {
+        let op = match op_name {
+            "add" => Operation::Add,
+            "subtract" => Operation::Subtract,
+            "multiply" => Operation::Multiply,
+            "divide" => Operation::Divide,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Unsupported operation: {}",
+                    op_name
+                )))
+            }
+        };
+        Ok(self.add_binary_formula(op, parents, name))
     }
 
     pub fn add_formula_previous_value(
@@ -157,8 +163,7 @@ impl PyComputationGraph {
         match checker.check_and_infer() {
             Ok(()) => Ok(()),
             Err(errors) => {
-                // For simplicity, return the first error. A more advanced implementation
-                // might return all errors.
+                // Collect and format all validation errors for a comprehensive report.
                 let error_messages: Vec<String> = errors
                     .iter()
                     .map(|e| format!("Node '{}': {}", e.node_name, e.message))

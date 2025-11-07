@@ -27,11 +27,10 @@ class Var:
 
         new_name = f"({self._name} {op_symbol} {other._name})"
         
-        # Dynamically get the correct FFI method (e.g., 'add_formula_add')
-        ffi_method = getattr(self._canvas._graph, f"add_formula_{op_name}")
-        
-        # The FFI call is now atomic, creating the node and its dependencies.
-        child_id = ffi_method(
+        # Call the unified FFI function for binary operations.
+        # This is more robust than dynamically looking up function names.
+        child_id = self._canvas._graph.add_binary_formula(
+            op_name=op_name,
             parents=[self._node_id, other._node_id],
             name=new_name
         )

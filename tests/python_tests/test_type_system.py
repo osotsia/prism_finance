@@ -29,12 +29,12 @@ VALIDATION_TEST_CASES = [
     ("verification_ok", lambda v: (v["revenue"] - v["costs"]).declare_type(unit="USD", temporal_type="Flow"), True, None),
 
     # Domain-Specific Edge Cases: Operations that are conceptually valid in finance.
-    ("stock_plus_stock_is_valid", lambda v: v["opening_balance"] + v["closing_balance"], True, None),
     ("stock_plus_flow_is_valid", lambda v: v["opening_balance"] + v["revenue"], True, None),
     ("stock_plus_flow_infers_stock", lambda v: (v["opening_balance"] + v["revenue"]).declare_type(temporal_type="Stock"), True, None),
 
     # Type Errors (Inference Failures): Inputs of an incorrect type that should raise an error.
     ("inference_fail_unit_mismatch", lambda v: v["revenue"] + v["volume"], False, "Unit Mismatch"),
+    ("stock_plus_stock_is_invalid", lambda v: v["opening_balance"] + v["closing_balance"], False, "more than one 'Stock' type"),
     
     # Type Errors (Verification Failures): Declared type mismatches inferred type.
     ("verification_fail_unit_mismatch", lambda v: (v["revenue"] - v["costs"]).declare_type(unit="EUR"), False, "Declared unit 'EUR' does not match inferred unit 'USD'"),
