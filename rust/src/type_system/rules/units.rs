@@ -71,31 +71,28 @@ impl ParsedUnit {
 
     /// Formats the `ParsedUnit` back into a canonical string representation.
     fn to_string(&self) -> String {
-        let mut num = BTreeMap::new();
-        let mut den = BTreeMap::new();
+        // Partition terms into numerator (exp > 0) and denominator (exp < 0).
+        let (num_terms, den_terms): (Vec<_>, Vec<_>) = self
+            .terms
+            .iter()
+            .filter(|&(_, &exp)| exp != 0)
+            .partition(|&(_, &exp)| exp > 0);
 
-        for (base, &exp) in &self.terms {
-            if exp == 0 { continue; }
-            if exp > 0 {
-                num.insert(base.clone(), exp);
-            } else {
-                den.insert(base.clone(), -exp);
-            }
-        }
-        
-        let format_terms = |terms: BTreeMap<String, i32>| -> String {
-            if terms.is_empty() { return "1".to_string(); }
-            terms
-                .iter()
-                .map(|(base, &exp)| {
-                    if exp == 1 { base.clone() } else { format!("{}^{}", base, exp) }
-                })
-                .collect::<Vec<_>>()
-                .join("*")
+        // Helper to format a single term like "m" or "s^2".
+        let format_term = |(base, &exp): (&String, &i32)| {
+            if exp.abs() == 1 { base.clone() } else { format!("{}^{}", base, exp.abs()) }
         };
 
-        let num_str = format_terms(num);
-        let den_str = format_terms(den);
+        // Helper to format and join a list of terms.
+        let format_product = |terms: Vec<(&String, &i32)>| -> String {
+            if terms.is_empty() { return "1".to_string(); }
+            let mut sorted_terms = terms;
+            sorted_terms.sort_by_key(|&(base, _)| base);
+            sorted_terms.into_iter().map(format_term).collect::<Vec<_>>().join("*")
+        };
+
+        let num_str = format_product(num_terms);
+        let den_str = format_product(den_terms);
         
         if den_str == "1" {
             if num_str == "1" { "".to_string() } else { num_str } // Dimensionless
@@ -118,9 +115,9 @@ pub(crate) fn infer_and_validate(
 
     match op {
         Operation::Add | Operation::Subtract => {
-            let first_unit = &parent_units[0].0;
-            if parent_units.iter().all(|u| &u.0 == first_unit) {
-                Ok(Some(Unit(first_unit.clone())))
+            let first_unit = &parent_units[0];
+            if parent_units.iter().all(|u| u == first_unit) {
+                Ok(Some((*first_unit).clone()))
             } else {
                 Err(ValidationError {
                     node_id: Default::default(),
@@ -131,14 +128,17 @@ pub(crate) fn infer_and_validate(
             }
         }
         Operation::Multiply => {
-            let mut result_unit = ParsedUnit::default();
-            for unit in parent_units {
-                match ParsedUnit::from_str(&unit.0) {
-                    Ok(parsed) => result_unit.multiply_by(&parsed),
-                    Err(_) => return Ok(None), // Fail gracefully if a unit is unparsable
-                }
+            // Use try_fold to accumulate units, short-circuiting if any unit is unparsable.
+            let result = parent_units.iter().try_fold(ParsedUnit::default(), |mut acc, unit| {
+                let parsed = ParsedUnit::from_str(&unit.0)?;
+                acc.multiply_by(&parsed);
+                Ok::<_, ()>(acc)
+            });
+            
+            match result {
+                Ok(final_unit) => Ok(Some(Unit(final_unit.to_string()))),
+                Err(_) => Ok(None), // Fail gracefully
             }
-            Ok(Some(Unit(result_unit.to_string())))
         }
         Operation::Divide => {
             if parents.len() != 2 { return Ok(None); } // Only support binary division
@@ -154,7 +154,6 @@ pub(crate) fn infer_and_validate(
             }
         }
         Operation::PreviousValue { .. } => {
-            // .prev() inherits the unit of its main parent.
             Ok(parents[0].unit.clone())
         }
     }
