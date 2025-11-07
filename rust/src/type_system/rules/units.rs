@@ -22,6 +22,7 @@ pub(crate) fn infer_and_validate(
             } else {
                 Err(ValidationError {
                     node_id: Default::default(),
+                    node_name: String::new(),
                     error_type: ValidationErrorType::UnitMismatch,
                     message: format!("Unit Mismatch: Addition/subtraction requires all units to be identical, but found mixed units."),
                 })
@@ -39,8 +40,11 @@ pub(crate) fn infer_and_validate(
         }
         Operation::Divide => {
             if parents.len() != 2 { return Ok(None); } // Only support binary division for now
-            let p1 = ParsedUnit::from_str(&parents[0].unit.as_ref().unwrap().0);
-            let p2 = ParsedUnit::from_str(&parents[1].unit.as_ref().unwrap().0);
+            let p1_unit = parents[0].unit.as_ref().map(|u| u.0.as_str()).unwrap_or("");
+            let p2_unit = parents[1].unit.as_ref().map(|u| u.0.as_str()).unwrap_or("");
+            
+            let p1 = ParsedUnit::from_str(p1_unit);
+            let p2 = ParsedUnit::from_str(p2_unit);
             
             let mut res = p1;
             res.num.extend(&p2.den);
@@ -69,14 +73,16 @@ impl<'a> ParsedUnit<'a> {
     }
 
     fn to_string(&self) -> String {
-        if self.num.is_empty() && self.den.is_empty() { return "".into(); }
+        if self.num.is_empty() && self.den.is_empty() { return String::new(); }
+        
         let mut num_vec: Vec<_> = self.num.iter().copied().collect();
-        num_vec.sort();
+        num_vec.sort_unstable();
         let num_str = if num_vec.is_empty() { "1".to_string() } else { num_vec.join("*") };
 
         if self.den.is_empty() { return num_str; }
+        
         let mut den_vec: Vec<_> = self.den.iter().copied().collect();
-        den_vec.sort();
+        den_vec.sort_unstable();
         format!("{}/{}", num_str, den_vec.join("*"))
     }
 }

@@ -1,5 +1,5 @@
 //! The central checker that executes all type system rules in the correct order.
-use super::error::ValidationError;
+use super::error::{ValidationError, ValidationErrorType};
 use super::rules::{temporal, units};
 use crate::graph::{ComputationGraph, Node, NodeId, NodeMetadata};
 use std::collections::HashMap;
@@ -20,7 +20,8 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Executes all rules against the graph, collecting errors and inferring types.
+    /// Executes all rules against the graph, collecting errors, inferring types,
+    /// and verifying user-declared types.
     pub fn check_and_infer(&mut self) -> Result<(), Vec<ValidationError>> {
         let order = match self.graph.topological_order() {
             Ok(order) => order,
@@ -43,40 +44,43 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Checks a single node, inferring its metadata or adding an error.
+    /// The "Metaphorical Accountant": Checks a single node's "paperwork".
+    /// 1.  **Gathers receipts**: Collects the already-verified types from parent nodes.
+    /// 2.  **Calculates the total**: Infers the node's own type based on the operation.
+    /// 3.  **Audits the calculation**: If the user declared an expected total (type),
+    ///     it verifies the calculated total matches the expectation.
+    /// 4.  **Files the result**: Stores the newly inferred type for downstream nodes to use.
     fn check_node(&mut self, node_id: NodeId, node: &Node) {
+        // --- PHASE 1: INFERENCE ---
+        // Infer the node's metadata based on its parents. For constants, this is trivial.
+        // For formulas, it involves applying inference rules.
         let inferred_meta = match node {
             Node::Constant { meta, .. } => meta.clone(),
-            Node::Formula { op, parents, meta } => {
-                // --- FIX APPLIED HERE ---
-                // Collect owned metadata by cloning. This ends the immutable borrow of `self`
-                // after this line, allowing `self.errors` to be borrowed mutably later.
+            Node::Formula { op, parents, .. } => {
                 let parent_metas: Vec<NodeMetadata> = parents
                     .iter()
                     .map(|id| self.get_meta_for_node(*id).clone())
                     .collect();
 
-                let temporal_type =
-                    match temporal::infer_and_validate(op, &parent_metas) {
-                        Ok(t) => t,
-                        Err(mut e) => {
-                            e.node_id = node_id;
-                            self.errors.push(e);
-                            None
-                        }
-                    };
-
+                // Infer temporal type, pushing errors if inference fails.
+                let temporal_type = match temporal::infer_and_validate(op, &parent_metas) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.errors.push(e.at_node(node_id, node.meta().name.clone()));
+                        None
+                    }
+                };
+                // Infer unit, pushing errors if inference fails.
                 let unit = match units::infer_and_validate(op, &parent_metas) {
                     Ok(u) => u,
-                    Err(mut e) => {
-                        e.node_id = node_id;
-                        self.errors.push(e);
+                    Err(e) => {
+                        self.errors.push(e.at_node(node_id, node.meta().name.clone()));
                         None
                     }
                 };
 
                 NodeMetadata {
-                    name: meta.name.clone(),
+                    name: node.meta().name.clone(),
                     temporal_type,
                     unit,
                 }
@@ -84,14 +88,54 @@ impl<'a> TypeChecker<'a> {
             Node::SolverVariable { meta } => meta.clone(),
         };
 
+        // --- PHASE 2: VERIFICATION ---
+        // If the node is a formula with user-declared types, verify they match the
+        // inferred types from Phase 1.
+        if let Node::Formula { meta: declared_meta, .. } = node {
+            // Verify temporal type
+            if let Some(declared_tt) = &declared_meta.temporal_type {
+                if Some(declared_tt) != inferred_meta.temporal_type.as_ref() {
+                    let msg = format!(
+                        "Verification Error: Declared temporal type '{:?}' does not match inferred type '{:?}'.",
+                        declared_tt, inferred_meta.temporal_type
+                    );
+                    self.errors.push(ValidationError {
+                        node_id,
+                        node_name: node.meta().name.clone(),
+                        error_type: ValidationErrorType::TemporalMismatch,
+                        message: msg,
+                    });
+                }
+            }
+            // Verify unit
+            if let Some(declared_u) = &declared_meta.unit {
+                if Some(declared_u) != inferred_meta.unit.as_ref() {
+                    let msg = format!(
+                        "Verification Error: Declared unit '{}' does not match inferred unit '{}'.",
+                        declared_u.0,
+                        inferred_meta.unit.as_ref().map(|u| u.0.as_str()).unwrap_or("None")
+                    );
+                     self.errors.push(ValidationError {
+                        node_id,
+                        node_name: node.meta().name.clone(),
+                        error_type: ValidationErrorType::UnitMismatch,
+                        message: msg,
+                    });
+                }
+            }
+        }
+        
+        // --- PHASE 3: STORAGE ---
+        // Store the *inferred* metadata. This is crucial, as downstream nodes
+        // must build upon the inferred reality, not the user's declaration.
         self.inferred_meta.insert(node_id, inferred_meta);
     }
 
     /// Gets metadata for a node, preferring newly inferred metadata over original.
     fn get_meta_for_node(&self, node_id: NodeId) -> &NodeMetadata {
-        if let Some(meta) = self.inferred_meta.get(&node_id) {
-            return meta;
-        }
-        self.graph.get_node(node_id).unwrap().meta()
+        // The `inferred_meta` map contains the results of previous steps in the
+        // topological sort, so we can rely on it being populated for any parent node.
+        self.inferred_meta.get(&node_id)
+            .expect("BUG: Parent node metadata not found during check. This indicates a non-topological traversal.")
     }
 }

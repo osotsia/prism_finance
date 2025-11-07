@@ -36,10 +36,22 @@ impl PyComputationGraph {
         }
         child_id.index()
     }
+
+    /// Parses an optional string from Python into a TemporalType.
+    fn parse_temporal_type(temporal_type: Option<String>) -> PyResult<Option<TemporalType>> {
+        match temporal_type.as_deref() {
+            Some("Stock") => Ok(Some(TemporalType::Stock)),
+            Some("Flow") => Ok(Some(TemporalType::Flow)),
+            Some(other) => Err(PyValueError::new_err(format!(
+                "Invalid temporal_type: '{}'",
+                other
+            ))),
+            None => Ok(None),
+        }
+    }
 }
 
 // --- Python-exposed methods ---
-// This `impl` block IS marked with `#[pymethods]`.
 #[pymethods]
 impl PyComputationGraph {
     #[new]
@@ -54,19 +66,42 @@ impl PyComputationGraph {
         unit: Option<String>,
         temporal_type: Option<String>,
     ) -> PyResult<usize> {
-        let parsed_temporal = match temporal_type.as_deref() {
-            Some("Stock") => Some(TemporalType::Stock),
-            Some("Flow") => Some(TemporalType::Flow),
-            Some(other) => return Err(PyValueError::new_err(format!("Invalid temporal_type: '{}'", other))),
-            None => None,
-        };
         let meta = NodeMetadata {
             name,
             unit: unit.map(Unit),
-            temporal_type: parsed_temporal,
+            temporal_type: Self::parse_temporal_type(temporal_type)?,
         };
         let node_id = self.graph.add_constant(value, meta);
         Ok(node_id.index())
+    }
+
+    /// Updates metadata for a node and returns the *previous* metadata state.
+    pub fn set_node_metadata(
+        &mut self,
+        node_id: usize,
+        unit: Option<String>,
+        temporal_type: Option<String>,
+    ) -> PyResult<(Option<String>, Option<String>)> {
+        let node_idx = NodeId::new(node_id);
+        if let Some(node) = self.graph.graph.node_weight_mut(node_idx) {
+            let meta = node.meta_mut();
+
+            // Store old values before mutation.
+            let old_unit = meta.unit.as_ref().map(|u| u.0.clone());
+            let old_temporal_type = meta.temporal_type.as_ref().map(|tt| format!("{:?}", tt));
+            
+            // Apply new values if they are provided.
+            if unit.is_some() {
+                meta.unit = unit.map(Unit);
+            }
+            if temporal_type.is_some() {
+                meta.temporal_type = Self::parse_temporal_type(temporal_type)?;
+            }
+            
+            Ok((old_unit, old_temporal_type))
+        } else {
+            Err(PyValueError::new_err(format!("Node with id {} not found", node_id)))
+        }
     }
 
     pub fn add_formula_add(&mut self, parents: Vec<usize>, name: String) -> usize {
@@ -96,15 +131,23 @@ impl PyComputationGraph {
         let default_parent_id = NodeId::new(default_parent_idx);
 
         let node = Node::Formula {
-            op: Operation::PreviousValue { lag, default_node: default_parent_id },
+            op: Operation::PreviousValue {
+                lag,
+                default_node: default_parent_id,
+            },
             parents: vec![main_parent_id, default_parent_id],
-            meta: NodeMetadata { name, ..Default::default() },
+            meta: NodeMetadata {
+                name,
+                ..Default::default()
+            },
         };
         let child_id = self.graph.graph.add_node(node);
 
-        self.graph.add_dependency(main_parent_id, child_id, Edge::Temporal);
-        self.graph.add_dependency(default_parent_id, child_id, Edge::DefaultValue);
-        
+        self.graph
+            .add_dependency(main_parent_id, child_id, Edge::Temporal);
+        self.graph
+            .add_dependency(default_parent_id, child_id, Edge::DefaultValue);
+
         child_id.index()
     }
 
@@ -114,11 +157,17 @@ impl PyComputationGraph {
         match checker.check_and_infer() {
             Ok(()) => Ok(()),
             Err(errors) => {
-                let first_error = &errors[0];
+                // For simplicity, return the first error. A more advanced implementation
+                // might return all errors.
+                let error_messages: Vec<String> = errors
+                    .iter()
+                    .map(|e| format!("Node '{}': {}", e.node_name, e.message))
+                    .collect();
+
                 Err(PyValueError::new_err(format!(
-                    "Validation failed at node {}: {}",
-                    first_error.node_id.index(),
-                    first_error.message
+                    "Validation failed with {} error(s):\n- {}",
+                    errors.len(),
+                    error_messages.join("\n- ")
                 )))
             }
         }
@@ -129,7 +178,10 @@ impl PyComputationGraph {
             Ok(order) => Ok(order.into_iter().map(|id| id.index()).collect()),
             Err(cycle) => {
                 let node_index = cycle.node_id().index();
-                Err(PyValueError::new_err(format!("Graph contains a cycle: a node (id: {}) depends on itself.", node_index)))
+                Err(PyValueError::new_err(format!(
+                    "Graph contains a cycle: a node (id: {}) depends on itself.",
+                    node_index
+                )))
             }
         }
     }

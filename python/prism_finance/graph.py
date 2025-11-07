@@ -1,6 +1,7 @@
 """
 Defines the user-facing graph construction API (Canvas and Var).
 """
+import warnings
 from typing import List, Union, overload
 from . import _core  # Import the compiled Rust extension module
 
@@ -70,6 +71,46 @@ class Var:
         )
         return Var(canvas=self._canvas, node_id=child_id, name=new_name)
 
+    def declare_type(self, *, unit: str = None, temporal_type: str = None) -> 'Var':
+        """
+        Declares the expected type of this Var for static analysis.
+        
+        When `validate()` is called, the type checker will verify that its
+        inferred type for this node matches the type declared here.
+        If a type was already set (e.g., during `add_var`), this method
+        will overwrite it and issue a warning.
+
+        Args:
+            unit: The expected unit (e.g., "USD", "MWh").
+            temporal_type: The expected temporal type ("Stock" or "Flow").
+
+        Returns:
+            The Var instance, allowing for method chaining.
+        """
+        old_unit, old_temporal_type = self._canvas._graph.set_node_metadata(
+            node_id=self._node_id,
+            unit=unit,
+            temporal_type=temporal_type
+        )
+
+        # A warning is issued only if a new value is provided for an existing,
+        # different value, preventing warnings on initial type declaration.
+        if unit is not None and old_unit is not None and unit != old_unit:
+            warnings.warn(
+                f"Overwriting existing unit '{old_unit}' with '{unit}' for Var '{self._name}'.",
+                UserWarning,
+                stacklevel=2
+            )
+        
+        if temporal_type is not None and old_temporal_type is not None and temporal_type != old_temporal_type:
+             warnings.warn(
+                f"Overwriting existing temporal_type '{old_temporal_type}' with '{temporal_type}' for Var '{self._name}'.",
+                UserWarning,
+                stacklevel=2
+            )
+
+        return self
+
 
 class Canvas:
     """
@@ -103,6 +144,12 @@ class Canvas:
     def validate(self) -> None:
         """
         Performs static analysis on the graph.
+        
+        This process involves two steps for each formula node:
+        1. Inference: The type is inferred from its parents. Errors like
+           adding "USD" and "MWh" are caught here.
+        2. Verification: If a type was explicitly set using `.declare_type()`,
+           the inferred type is checked against the declared type.
         """
         self._graph.validate()
 

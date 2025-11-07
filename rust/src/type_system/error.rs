@@ -18,6 +18,8 @@ pub enum ValidationErrorType {
 pub struct ValidationError {
     /// The ID of the node where the error was detected.
     pub node_id: NodeId,
+    /// The name of the node where the error was detected.
+    pub node_name: String,
     /// The category of the error.
     pub error_type: ValidationErrorType,
     /// A human-readable message explaining the error.
@@ -30,11 +32,20 @@ impl ValidationError {
         let node_id = cycle.node_id();
         Self {
             node_id,
+            node_name: format!("id:{}", node_id.index()), // Name is unknown here
             error_type: ValidationErrorType::Structural,
             message: format!(
                 "Structural Error: Graph contains a cycle. Node {} depends on itself.",
                 node_id.index()
             ),
         }
+    }
+    
+    /// Attaches the final node context to an error that was generated deep in a rule.
+    /// The rules don't know the node_id, so the orchestrator adds it here.
+    pub fn at_node(mut self, node_id: NodeId, node_name: String) -> Self {
+        self.node_id = node_id;
+        self.node_name = node_name;
+        self
     }
 }

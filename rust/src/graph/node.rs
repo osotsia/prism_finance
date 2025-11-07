@@ -88,4 +88,13 @@ impl Node {
             Node::SolverVariable { meta } => meta,
         }
     }
+
+    /// Returns a mutable reference to the node's metadata.
+    pub fn meta_mut(&mut self) -> &mut NodeMetadata {
+        match self {
+            Node::Constant { meta, .. } => meta,
+            Node::Formula { meta, .. } => meta,
+            Node::SolverVariable { meta } => meta,
+        }
+    }
 }
