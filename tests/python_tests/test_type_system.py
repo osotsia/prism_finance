@@ -6,18 +6,26 @@ from prism_finance import Canvas, Var
 
 @pytest.fixture
 def model_with_vars() -> tuple[Canvas, dict[str, Var]]:
-    """Provides a Canvas and a dictionary of common Vars for tests."""
+    """
+    Provides a Canvas and a dictionary of common Vars for tests.
+    This fixture uses context manager dunder methods to ensure the
+    Canvas context is active during variable creation.
+    """
     model = Canvas()
-    v = {
-        "revenue": model.add_var(100, name="Revenue", unit="USD", temporal_type="Flow"),
-        "costs": model.add_var(40, name="Costs", unit="USD", temporal_type="Flow"),
-        "volume": model.add_var(50, name="Volume", unit="MWh", temporal_type="Flow"),
-        "opening_balance": model.add_var(1000, name="OB", unit="USD", temporal_type="Stock"),
-        "closing_balance": model.add_var(1200, name="CB", unit="USD", temporal_type="Stock"),
-        "untyped_a": model.add_var(10, name="A"),
-        "untyped_b": model.add_var(5, name="B"),
-    }
-    return model, v
+    model.__enter__()
+    try:
+        v = {
+            "revenue": Var(100, name="Revenue", unit="USD", temporal_type="Flow"),
+            "costs": Var(40, name="Costs", unit="USD", temporal_type="Flow"),
+            "volume": Var(50, name="Volume", unit="MWh", temporal_type="Flow"),
+            "opening_balance": Var(1000, name="OB", unit="USD", temporal_type="Stock"),
+            "closing_balance": Var(1200, name="CB", unit="USD", temporal_type="Stock"),
+            "untyped_a": Var(10, name="A"),
+            "untyped_b": Var(5, name="B"),
+        }
+        yield model, v
+    finally:
+        model.__exit__(None, None, None)
 
 
 # --- 2. Test Case Data Definition ---
@@ -59,7 +67,7 @@ def test_validation_scenarios(model_with_vars, id_str, setup_lambda, should_pass
     The test logic is separated from the data and setup.
     """
     model, v = model_with_vars
-    setup_lambda(v)  # Builds the formula on the graph
+    setup_lambda(v)  # Builds the formula on the graph (which is still in context from the fixture)
 
     if should_pass:
         try:

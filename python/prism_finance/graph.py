@@ -3,19 +3,57 @@ Defines the user-facing graph construction API (Canvas and Var).
 """
 import warnings
 from typing import List, Union, overload
+from contextvars import ContextVar
 from . import _core  # Import the compiled Rust extension module
+
+# A context variable to hold the currently active Canvas instance.
+_active_canvas: ContextVar['Canvas'] = ContextVar("active_canvas")
+
+
+def get_active_canvas() -> 'Canvas':
+    """Returns the active Canvas from the current context."""
+    try:
+        return _active_canvas.get()
+    except LookupError:
+        raise RuntimeError(
+            "A Var can only be created or used inside a 'with Canvas():' block."
+        )
 
 
 class Var:
     """Represents a variable (a node) in the financial model."""
 
-    def __init__(self, canvas: 'Canvas', node_id: int, name: str):
-        if not isinstance(canvas, Canvas):
-            raise TypeError("Var must be associated with a Canvas.")
+    def __init__(
+        self,
+        value: Union[int, float, List[float]],
+        *,
+        name: str,
+        unit: str = None,
+        temporal_type: str = None,
+    ):
+        if name is None:
+            raise ValueError("A 'name' must be provided for each Var.")
 
-        self._canvas = canvas
-        self._node_id = node_id
+        self._canvas = get_active_canvas()
         self._name = name
+
+        val_list = [float(value)] if isinstance(value, (int, float)) else [float(v) for v in value]
+        
+        self._node_id = self._canvas._graph.add_constant_node(
+            value=val_list,
+            name=name,
+            unit=unit,
+            temporal_type=temporal_type
+        )
+
+    @classmethod
+    def _from_existing_node(cls, canvas: 'Canvas', node_id: int, name: str) -> 'Var':
+        """Internal constructor to wrap an existing node_id in a Var object."""
+        var_instance = cls.__new__(cls)
+        var_instance._canvas = canvas
+        var_instance._node_id = node_id
+        var_instance._name = name
+        return var_instance
 
     def __repr__(self) -> str:
         return f"Var(name='{self._name}', id={self._node_id})"
@@ -28,13 +66,12 @@ class Var:
         new_name = f"({self._name} {op_symbol} {other._name})"
         
         # Call the unified FFI function for binary operations.
-        # This is more robust than dynamically looking up function names.
         child_id = self._canvas._graph.add_binary_formula(
             op_name=op_name,
             parents=[self._node_id, other._node_id],
             name=new_name
         )
-        return Var(canvas=self._canvas, node_id=child_id, name=new_name)
+        return Var._from_existing_node(canvas=self._canvas, node_id=child_id, name=new_name)
 
     def __add__(self, other: 'Var') -> 'Var':
         return self._create_binary_op(other, "add", "+")
@@ -68,7 +105,7 @@ class Var:
             lag=lag,
             name=new_name
         )
-        return Var(canvas=self._canvas, node_id=child_id, name=new_name)
+        return Var._from_existing_node(canvas=self._canvas, node_id=child_id, name=new_name)
 
     def declare_type(self, *, unit: str = None, temporal_type: str = None) -> 'Var':
         """
@@ -114,10 +151,24 @@ class Var:
 class Canvas:
     """
     The main container for a financial model's computation graph.
+    Designed to be used as a context manager.
     """
 
     def __init__(self):
         self._graph = _core._ComputationGraph()
+        self._token = None
+
+    def __enter__(self) -> 'Canvas':
+        """Sets this Canvas as the active one for the current context."""
+        if self._token is not None:
+            raise RuntimeError("Canvas context is not re-entrant.")
+        self._token = _active_canvas.set(self)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """Resets the active canvas, exiting the context."""
+        _active_canvas.reset(self._token)
+        self._token = None
 
     def add_var(
         self,
@@ -129,7 +180,14 @@ class Canvas:
     ) -> Var:
         """
         Adds a new constant variable to the graph with optional type metadata.
+        
+        DEPRECATED: Use the `Var(...)` constructor directly inside a `with Canvas():` block.
         """
+        warnings.warn(
+            "'Canvas.add_var' is deprecated. Use 'Var(...)' directly inside a 'with Canvas():' block.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         val_list = [float(value)] if isinstance(value, (int, float)) else [float(v) for v in value]
         
         node_id = self._graph.add_constant_node(
@@ -138,7 +196,7 @@ class Canvas:
             unit=unit,
             temporal_type=temporal_type
         )
-        return Var(canvas=self, node_id=node_id, name=name)
+        return Var._from_existing_node(canvas=self, node_id=node_id, name=name)
     
     def validate(self) -> None:
         """
