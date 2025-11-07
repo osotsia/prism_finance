@@ -95,9 +95,17 @@ impl<'a> TypeChecker<'a> {
             // Verify temporal type
             if let Some(declared_tt) = &declared_meta.temporal_type {
                 if Some(declared_tt) != inferred_meta.temporal_type.as_ref() {
+                    let inferred_str = inferred_meta
+                        .temporal_type
+                        .as_ref()
+                        .map_or("None", |t| match t {
+                            crate::graph::TemporalType::Stock => "Stock",
+                            crate::graph::TemporalType::Flow => "Flow",
+                        });
+
                     let msg = format!(
-                        "Verification Error: Declared temporal type '{:?}' does not match inferred type '{:?}'.",
-                        declared_tt, inferred_meta.temporal_type
+                        "Verification Error: Declared temporal type '{:?}' does not match inferred type '{}'.",
+                        declared_tt, inferred_str
                     );
                     self.errors.push(ValidationError {
                         node_id,
@@ -110,10 +118,11 @@ impl<'a> TypeChecker<'a> {
             // Verify unit
             if let Some(declared_u) = &declared_meta.unit {
                 if Some(declared_u) != inferred_meta.unit.as_ref() {
+                    let inferred_str = inferred_meta.unit.as_ref().map_or("None", |u| u.0.as_str());
                     let msg = format!(
                         "Verification Error: Declared unit '{}' does not match inferred unit '{}'.",
                         declared_u.0,
-                        inferred_meta.unit.as_ref().map(|u| u.0.as_str()).unwrap_or("None")
+                        inferred_str
                     );
                      self.errors.push(ValidationError {
                         node_id,
