@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 /// This structure acts as a "blueprint" of the model. It contains the
 /// graph topology (`graph`) and the input data for constant nodes (`constants`).
 /// This separation of structure from data is a "columnar" design, which
+
 /// improves performance for the computation engine.
 #[derive(Debug, Clone, Default)]
 pub struct ComputationGraph {
@@ -28,6 +29,16 @@ impl ComputationGraph {
         let node_id = self.graph.add_node(node);
         self.constants.insert(node_id, value);
         node_id
+    }
+
+    /// Updates the value of an existing `Constant` node.
+    pub fn update_constant(&mut self, node_id: NodeId, new_value: Vec<f64>) -> Result<(), String> {
+        if !self.constants.contains_key(&node_id) {
+            return Err(format!("Node with id {} is not a constant node or does not exist.", node_id.index()));
+        }
+        // This check is sufficient. If it's in the constants map, it's a constant node.
+        self.constants.insert(node_id, new_value);
+        Ok(())
     }
 
     /// Adds a `Formula` node to the graph and establishes its dependencies.
@@ -103,7 +114,7 @@ mod tests {
         let node_ids = (0..n)
             .map(|i| {
                 graph.add_constant(
-                    vec![],
+                    vec![(i + 1) as f64],
                     NodeMetadata { name: format!("Node_{}", i), ..Default::default() },
                 )
             })
@@ -181,6 +192,29 @@ mod tests {
         // Assert its value exists in the columnar data store
         let retrieved_value = graph.get_constant_value(node_id).expect("Value should be retrievable");
         assert_eq!(*retrieved_value, value_data, "Retrieved value data does not match original");
+    }
+
+    #[test]
+    fn test_update_constant_modifies_value_correctly() {
+        let (mut graph, node_ids) = create_graph_with_constants(1);
+        let node_id = node_ids[0];
+        let initial_value = graph.get_constant_value(node_id).unwrap().clone();
+        assert_eq!(initial_value, vec![1.0]);
+
+        let new_value = vec![99.0, 100.0];
+        graph.update_constant(node_id, new_value.clone()).unwrap();
+
+        let updated_value = graph.get_constant_value(node_id).unwrap();
+        assert_eq!(*updated_value, new_value);
+    }
+
+    #[test]
+    fn test_update_constant_fails_for_non_constant_node() {
+        let (mut graph, node_ids) = create_graph_with_constants(2);
+        let formula_id = graph.add_formula(Operation::Add, vec![node_ids[0], node_ids[1]], Default::default());
+
+        let result = graph.update_constant(formula_id, vec![0.0]);
+        assert!(result.is_err());
     }
 
     // --- 4. Formula and Dependency Tests ---

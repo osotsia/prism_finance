@@ -4,10 +4,10 @@ use crate::computation::{ComputationEngine, ComputationError, Ledger};
 use crate::graph::dag::ComputationGraph;
 use crate::graph::edge::Edge;
 use crate::graph::node::{Node, NodeId, NodeMetadata, Operation, TemporalType, Unit};
-use crate::solver::{newton as newton_solver, problem::SolverProblem};
+// use crate::solver::{newton as newton_solver, problem::SolverProblem};
 use crate::type_system::TypeChecker;
 
-use petgraph::Direction;
+// use petgraph::Direction;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use std::collections::HashSet;
@@ -44,13 +44,8 @@ pub struct PyComputationGraph {
     graph: ComputationGraph,
 }
 
-#[pymethods]
+// Private helper function, moved outside of the `#[pymethods]` block.
 impl PyComputationGraph {
-    #[new]
-    pub fn new() -> Self {
-        Self::default()
-    }
-    
     fn parse_temporal_type(temporal_type: Option<String>) -> PyResult<Option<TemporalType>> {
         match temporal_type.as_deref() {
             Some("Stock") => Ok(Some(TemporalType::Stock)),
@@ -59,7 +54,16 @@ impl PyComputationGraph {
             None => Ok(None),
         }
     }
+}
 
+
+#[pymethods]
+impl PyComputationGraph {
+    #[new]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
     pub fn add_constant_node(&mut self, value: Vec<f64>, name: String, unit: Option<String>, temporal_type: Option<String>) -> PyResult<usize> {
         let meta = NodeMetadata {
             name,
@@ -68,6 +72,12 @@ impl PyComputationGraph {
         };
         let node_id = self.graph.add_constant(value, meta);
         Ok(node_id.index())
+    }
+
+    pub fn update_constant_node(&mut self, node_id: usize, new_value: Vec<f64>) -> PyResult<()> {
+        self.graph
+            .update_constant(NodeId::new(node_id), new_value)
+            .map_err(PyValueError::new_err)
     }
 
     pub fn set_node_metadata(&mut self, node_id: usize, unit: Option<String>, temporal_type: Option<String>) -> PyResult<(Option<String>, Option<String>)> {
@@ -150,6 +160,8 @@ impl PyComputationGraph {
 
     #[pyo3(name = "solve")]
     pub fn py_solve(&self) -> PyResult<PyLedger> {
+        Err(PyRuntimeError::new_err("Solver functionality is currently disabled."))
+        /*
         let engine = ComputationEngine::new(&self.graph);
         let mut solver_vars = Vec::new();
         let mut constraint_nodes = Vec::new();
@@ -181,6 +193,7 @@ impl PyComputationGraph {
         post_engine.compute(&all_nodes, &mut solved_ledger).map_err(to_py_err)?;
 
         Ok(PyLedger { ledger: solved_ledger })
+        */
     }
 
     #[pyo3(name = "validate")]

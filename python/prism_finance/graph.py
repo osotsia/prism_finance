@@ -57,6 +57,22 @@ class Var:
 
     def __repr__(self) -> str:
         return f"Var(name='{self._name}', id={self._node_id})"
+    
+    def set(self, value: Union[int, float, List[float]]):
+        """
+        Updates the value of this constant Var. This operation marks the Var
+        as 'dirty' for subsequent incremental recomputations.
+        
+        Raises:
+            TypeError: If called on a Var that is not a constant input (e.g., a formula).
+        """
+        val_list = [float(value)] if isinstance(value, (int, float)) else [float(v) for v in value]
+        try:
+            self._canvas._graph.update_constant_node(self._node_id, val_list)
+        except ValueError as e:
+            # Re-raise with a more user-friendly message
+            raise TypeError(f"Cannot set value for Var '{self._name}'. It may not be a constant input Var.") from e
+
 
     def _create_binary_op(self, other: 'Var', op_name: str, op_symbol: str) -> 'Var':
         """Helper method to create a new Var from a binary operation."""
@@ -84,14 +100,14 @@ class Var:
     def __truediv__(self, other: 'Var') -> 'Var':
         return self._create_binary_op(other, "divide", "/")
 
-    def must_equal(self, other: 'Var') -> None:
-        """
-        Declares a constraint that this Var must equal another Var.
-        This is syntactic sugar for `canvas.must_equal(self, other)`.
-        """
-        if not isinstance(other, Var) or self._canvas is not other._canvas:
-            raise ValueError("Constraints can only be set between Vars from the same Canvas.")
-        self._canvas.must_equal(self, other)
+    # def must_equal(self, other: 'Var') -> None:
+    #     """
+    #     Declares a constraint that this Var must equal another Var.
+    #     This is syntactic sugar for `canvas.must_equal(self, other)`.
+    #     """
+    #     if not isinstance(other, Var) or self._canvas is not other._canvas:
+    #         raise ValueError("Constraints can only be set between Vars from the same Canvas.")
+    #     self._canvas.must_equal(self, other)
 
     def prev(self, lag: int = 1, *, default: 'Var') -> 'Var':
         if not isinstance(default, Var) or self._canvas is not default._canvas:
@@ -156,26 +172,26 @@ class Canvas:
         _active_canvas.reset(self._token)
         self._token = None
 
-    def solver_var(self, name: str) -> Var:
-        """
-        Adds a new variable to the graph whose value will be determined by the solver.
+    # def solver_var(self, name: str) -> Var:
+    #     """
+    #     Adds a new variable to the graph whose value will be determined by the solver.
         
-        Args:
-            name: A unique, human-readable name for the variable.
+    #     Args:
+    #         name: A unique, human-readable name for the variable.
             
-        Returns:
-            A `Var` instance representing the solver variable.
-        """
-        node_id = self._graph.add_solver_variable(name=name)
-        return Var._from_existing_node(canvas=self, node_id=node_id, name=name)
+    #     Returns:
+    #         A `Var` instance representing the solver variable.
+    #     """
+    #     node_id = self._graph.add_solver_variable(name=name)
+    #     return Var._from_existing_node(canvas=self, node_id=node_id, name=name)
 
-    def must_equal(self, var1: Var, var2: Var) -> None:
-        """
-        Declares a constraint that two Vars must be equal. This forms the basis
-        of the system of equations for the solver.
-        """
-        constraint_name = f"Constraint: {var1._name} == {var2._name}"
-        self._graph.must_equal(var1._node_id, var2._node_id, name=constraint_name)
+    # def must_equal(self, var1: Var, var2: Var) -> None:
+    #     """
+    #     Declares a constraint that two Vars must be equal. This forms the basis
+    #     of the system of equations for the solver.
+    #     """
+    #     constraint_name = f"Constraint: {var1._name} == {var2._name}"
+    #     self._graph.must_equal(var1._node_id, var2._node_id, name=constraint_name)
     
     def solve(self) -> None:
         """
@@ -186,13 +202,49 @@ class Canvas:
         2. Runs the numerical solver to find the values of the solver variables.
         3. Runs a final computation pass to calculate all values that depend on the solved variables.
         
-        The final, complete set of results is stored internally. Use `.compute(var)` to retrieve them.
+        The final, complete set of results is stored internally. Use `.get_value(var)` to retrieve them.
         """
         self._last_ledger = self._graph.solve()
 
-    def compute(self, target_var: Var) -> Union[float, List[float]]:
+    def compute_all(self) -> None:
         """
-        Retrieves the value of a target Var from the most recent `solve()` execution.
+        Performs a full computation of all nodes in the graph. This should be
+        called once to establish the initial state of the model before any
+        incremental recomputations.
+        """
+        if self._last_ledger is None:
+            self._last_ledger = _core._Ledger()
+        
+        # The `targets` parameter in the core engine is currently unused but
+        # required by the function signature. We pass all nodes. The engine
+        # will compute everything not already in the ledger.
+        all_node_ids = list(range(self._graph.node_count()))
+        self._graph.compute(targets=all_node_ids, ledger=self._last_ledger, changed_inputs=None)
+
+    def recompute(self, changed_vars: List[Var]) -> None:
+        """
+        Performs an incremental recomputation of the graph based on a list
+        of constant Vars that have been updated via `.set()`.
+
+        Only the provided Vars and their downstream dependencies will be
+        recalculated.
+
+        Args:
+            changed_vars: A list of `Var` objects whose values have changed.
+
+        Raises:
+            RuntimeError: If `.compute_all()` or `.solve()` has not been called first.
+        """
+        if self._last_ledger is None:
+            raise RuntimeError("Must call .compute_all() or .solve() before recomputing.")
+        
+        changed_ids = [v._node_id for v in changed_vars]
+        all_node_ids = list(range(self._graph.node_count())) # `targets` is required but unused.
+        self._graph.compute(targets=all_node_ids, ledger=self._last_ledger, changed_inputs=changed_ids)
+
+    def get_value(self, target_var: Var) -> Union[float, List[float]]:
+        """
+        Retrieves the value of a target Var from the most recent computation.
         
         Args:
             target_var: The Var whose value you want to retrieve.
@@ -202,11 +254,11 @@ class Canvas:
             (for time-series results).
             
         Raises:
-            RuntimeError: If `.solve()` has not been called yet.
+            RuntimeError: If a computation has not been run yet.
             ValueError: If the value for the target Var is not found in the results.
         """
         if self._last_ledger is None:
-            raise RuntimeError("Must call .solve() before requesting a computed value.")
+            raise RuntimeError("Must call .compute_all() or .solve() before requesting a value.")
         
         values = self._last_ledger.get_value(target_var._node_id)
         if values is None:
@@ -214,7 +266,7 @@ class Canvas:
             # which indicates a potential logic error in the graph.
             raise ValueError(f"Value for '{target_var._name}' not found in the ledger.")
             
-        # For scalar models, which are common in solver contexts, returning a single
+        # For scalar models, which are common in many contexts, returning a single
         # float is more convenient for the user.
         return values[0] if len(values) == 1 else values
 

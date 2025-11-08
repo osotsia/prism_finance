@@ -13,7 +13,7 @@ impl<'a> ComputationEngine<'a> {
         Self { graph }
     }
 
-    pub fn compute(&self, targets: &[NodeId], ledger: &mut Ledger) -> Result<(), ComputationError> {
+    pub fn compute(&self, _targets: &[NodeId], ledger: &mut Ledger) -> Result<(), ComputationError> {
         let order = self.graph.topological_order().map_err(|_| ComputationError::CycleDetected)?;
         for &node_id in &order {
             if ledger.get(node_id).is_some() { continue; }
@@ -32,7 +32,7 @@ impl<'a> ComputationEngine<'a> {
             },
             Node::Formula { parents, .. } => {
                 let mut parent_values = Vec::with_capacity(parents.len());
-                for (i, pid) in parents.iter().enumerate() {
+                for pid in parents.iter() {
                     match ledger.get(*pid).expect("BUG: Parent must be computed due to topological order") {
                         Ok(val) => parent_values.push(val.clone()),
                         Err(e) => return Err(ComputationError::UpstreamError {

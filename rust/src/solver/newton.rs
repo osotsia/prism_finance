@@ -1,4 +1,5 @@
 //! Implements the `argmin::core::Operator` trait for Newton's method using finite differences.
+/*
 use crate::solver::problem::SolverProblem;
 use crate::computation::ComputationError;
 use argmin::core::{CostFunction, Error, Executor, Gradient, Hessian, State};
@@ -67,3 +68,4 @@ pub fn solve(problem: SolverProblem) -> Result<crate::computation::Ledger, Compu
     }
     Ok(final_ledger)
 }
+*/

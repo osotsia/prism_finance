@@ -14,14 +14,14 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 petgraph = "0.6.4"
 pyo3 = { version = "0.27", features = ["extension-module"] } # 0.27 really is the current version
-faer = "0.17"
+# faer = "0.17" # Solver dependency
 
 # New dependencies for computation engine and solver
 tokio = { version = "1", features = ["rt", "macros"] } # Minimal features needed for runtime
 thiserror = "1.0"
-argmin = "0.8"
-argmin-math = { version = "0.2", features = ["nalgebra_latest"] }
-nalgebra = "0.32"
+# argmin = "0.8" # Solver dependency
+# argmin-math = { version = "0.2", features = ["nalgebra_latest"] } # Solver dependency
+# nalgebra = "0.32" # Solver dependency
 
 [dev-dependencies]
 rstest = "0.21.0"

@@ -1,4 +1,5 @@
 //! Defines the structure of a solver problem.
+/*
 use crate::graph::{ComputationGraph, NodeId};
 use crate::computation::{ComputationEngine, Ledger};
 
@@ -15,3 +16,4 @@ pub struct SolverProblem<'a> {
     /// A template ledger containing all non-solver-dependent values.
     pub(crate) base_ledger: Ledger,
 }
+*/
