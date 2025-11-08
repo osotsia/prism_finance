@@ -10,6 +10,7 @@ mod graph;
 mod graph_ffi;
 mod solver;
 mod type_system;
+mod display;
 
 // --- Placeholder function to test the bridge ---
 /// A simple function to confirm the Rust core is callable from Python.

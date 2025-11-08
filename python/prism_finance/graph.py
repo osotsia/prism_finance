@@ -73,6 +73,12 @@ class Var:
             # Re-raise with a more user-friendly message
             raise TypeError(f"Cannot set value for Var '{self._name}'. It may not be a constant input Var.") from e
 
+    def trace(self):
+        """
+        Convenience method to trace this Var using its parent Canvas.
+        Equivalent to `canvas.trace(var)`.
+        """
+        self._canvas.trace(self)
 
     def _create_binary_op(self, other: 'Var', op_name: str, op_symbol: str) -> 'Var':
         """Helper method to create a new Var from a binary operation."""
@@ -269,6 +275,23 @@ class Canvas:
         # For scalar models, which are common in many contexts, returning a single
         # float is more convenient for the user.
         return values[0] if len(values) == 1 else values
+
+    def trace(self, target_var: Var):
+        """
+        Generates and prints a step-by-step audit trace for a given Var,
+        showing how it was derived from its ultimate inputs.
+
+        Args:
+            target_var: The Var to trace.
+        
+        Raises:
+            RuntimeError: If a computation has not been run yet.
+        """
+        if self._last_ledger is None:
+            raise RuntimeError("Must call .compute_all() or .solve() before tracing.")
+        
+        trace_output = self._graph.trace_node(target_var._node_id, self._last_ledger)
+        print(trace_output)
 
     def validate(self) -> None:
         self._graph.validate()

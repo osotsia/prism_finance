@@ -6,6 +6,7 @@ use crate::graph::edge::Edge;
 use crate::graph::node::{Node, NodeId, NodeMetadata, Operation, TemporalType, Unit};
 // use crate::solver::{newton as newton_solver, problem::SolverProblem};
 use crate::type_system::TypeChecker;
+use crate::display::trace;
 
 // use petgraph::Direction;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -194,6 +195,11 @@ impl PyComputationGraph {
 
         Ok(PyLedger { ledger: solved_ledger })
         */
+    }
+
+    pub fn trace_node(&self, node_id: usize, ledger: &PyLedger) -> PyResult<String> {
+        let trace_str = trace::format_trace(&self.graph, &ledger.ledger, NodeId::new(node_id));
+        Ok(trace_str)
     }
 
     #[pyo3(name = "validate")]
