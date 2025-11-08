@@ -2,7 +2,7 @@
 
 use super::edge::Edge;
 use super::node::{Node, NodeId, NodeMetadata, Operation};
-use petgraph::{algo::toposort, stable_graph::StableDiGraph, visit::Bfs};
+use petgraph::{algo::toposort, stable_graph::StableDiGraph, visit::Bfs, Direction};
 use std::collections::{HashMap, HashSet};
 /// A computation graph representing the financial model.
 ///
@@ -71,6 +71,11 @@ impl ComputationGraph {
     /// Retrieves a constant's time-series value by its ID.
     pub fn get_constant_value(&self, id: NodeId) -> Option<&Vec<f64>> {
         self.constants.get(&id)
+    }
+
+    /// Returns the first parent of a node. Useful for simple parent-child relationships.
+    pub fn get_first_parent(&self, id: NodeId) -> Option<NodeId> {
+        self.graph.neighbors_directed(id, Direction::Incoming).next()
     }
 
     /// Returns a vector of node IDs in a valid evaluation order (topological sort).

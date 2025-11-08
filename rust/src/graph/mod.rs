@@ -11,5 +11,4 @@ pub mod node;
 
 // Re-export key types for convenient access from other modules.
 pub use dag::ComputationGraph;
-pub use edge::Edge;
 pub use node::{Node, NodeId, NodeMetadata, Operation, TemporalType, Unit};

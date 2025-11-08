@@ -4,11 +4,10 @@ use crate::computation::{ComputationEngine, ComputationError, Ledger};
 use crate::graph::dag::ComputationGraph;
 use crate::graph::edge::Edge;
 use crate::graph::node::{Node, NodeId, NodeMetadata, Operation, TemporalType, Unit};
-// use crate::solver::{newton as newton_solver, problem::SolverProblem};
+use crate::solver::{optimizer as solver_optimizer, problem::PrismProblem};
 use crate::type_system::TypeChecker;
 use crate::display::trace;
 
-// use petgraph::Direction;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use std::collections::HashSet;
@@ -161,40 +160,59 @@ impl PyComputationGraph {
 
     #[pyo3(name = "solve")]
     pub fn py_solve(&self) -> PyResult<PyLedger> {
-        Err(PyRuntimeError::new_err("Solver functionality is currently disabled."))
-        /*
         let engine = ComputationEngine::new(&self.graph);
         let mut solver_vars = Vec::new();
-        let mut constraint_nodes = Vec::new();
+        let mut residual_nodes = Vec::new();
+
+        // Identify solver variables and the residual nodes that drive the constraints.
         for node_id in self.graph.graph.node_indices() {
-            match self.graph.get_node(node_id).unwrap() {
-                Node::SolverVariable { .. } => solver_vars.push(node_id),
-                Node::Constraint { .. } => constraint_nodes.push(node_id), _ => {},
+            match self.graph.get_node(node_id) {
+                Some(Node::SolverVariable { .. }) => solver_vars.push(node_id),
+                Some(Node::Constraint { .. }) => {
+                    // The residual is the direct parent of the constraint node.
+                    if let Some(parent_id) = self.graph.get_first_parent(node_id) {
+                        residual_nodes.push(parent_id);
+                    }
+                },
+                _ => {}
             }
         }
 
+        // If no solver variables, just do a full computation.
         if solver_vars.is_empty() {
             let mut ledger = Ledger::new();
             let all_nodes: Vec<NodeId> = self.graph.graph.node_indices().collect();
             engine.compute(&all_nodes, &mut ledger).map_err(to_py_err)?;
             return Ok(PyLedger { ledger });
         }
-        if constraint_nodes.is_empty() { return Err(PyRuntimeError::new_err("Solver variables exist but no constraints were defined.")); }
 
+        if residual_nodes.is_empty() {
+            return Err(PyRuntimeError::new_err("Solver variables exist but no constraints were defined."));
+        }
+
+        // Pre-compute all nodes that do NOT depend on the solver variables.
         let mut base_ledger = Ledger::new();
         let solver_dependent_nodes = self.graph.downstream_from(&solver_vars);
         let precompute_targets: Vec<NodeId> = self.graph.graph.node_indices().filter(|id| !solver_dependent_nodes.contains(id)).collect();
         engine.compute(&precompute_targets, &mut base_ledger).map_err(to_py_err)?;
 
-        let problem = SolverProblem { graph: &self.graph, variables: solver_vars, constraints: constraint_nodes, sync_engine: engine, base_ledger };
-        let mut solved_ledger = newton_solver::solve(problem).map_err(to_py_err)?;
+        // Set up and run the solver.
+        let problem = PrismProblem { 
+            graph: &self.graph,
+            variables: solver_vars,
+            residuals: residual_nodes,
+            sync_engine: engine,
+            base_ledger,
+        };
 
+        let mut solved_ledger = solver_optimizer::solve(problem).map_err(to_py_err)?;
+
+        // Post-compute any remaining nodes that depend on the solved values.
         let post_engine = ComputationEngine::new(&self.graph);
         let all_nodes: Vec<NodeId> = self.graph.graph.node_indices().collect();
         post_engine.compute(&all_nodes, &mut solved_ledger).map_err(to_py_err)?;
 
         Ok(PyLedger { ledger: solved_ledger })
-        */
     }
 
     pub fn trace_node(&self, node_id: usize, ledger: &PyLedger) -> PyResult<String> {

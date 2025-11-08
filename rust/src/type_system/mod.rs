@@ -5,10 +5,8 @@
 //! *before* any computation is performed, catching entire classes of common
 //! financial modeling errors.
 
-// --- CORRECTED EXPORTS ---
 // Publicly export the primary components for use by other modules.
-pub use self::error::{ValidationError, ValidationErrorType};
-pub use self::checker::TypeChecker; // This line was missing or incorrect.
+pub use self::checker::TypeChecker;
 
 // --- MODULE DECLARATIONS ---
 mod error;

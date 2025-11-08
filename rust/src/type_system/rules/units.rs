@@ -1,7 +1,7 @@
 //! Rule for dimensional analysis and unit inference.
 use crate::graph::{NodeMetadata, Operation, Unit};
 use crate::type_system::error::{ValidationError, ValidationErrorType};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 /// A parsed representation of a unit, mapping each base unit to its exponent.
 /// Example: "kg*m/s^2" -> { "kg": 1, "m": 1, "s": -2 }
