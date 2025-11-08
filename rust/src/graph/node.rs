@@ -4,21 +4,11 @@
 use petgraph::graph::NodeIndex;
 
 /// A unique, stable identifier for a node within the graph.
-///
-/// This is a type alias for `petgraph::graph::NodeIndex` to abstract the
-/// underlying graph implementation.
 pub type NodeId = NodeIndex;
 
-/// Represents the temporal nature of a financial variable.
-///
-/// This is a core component of the static analysis type system, used to
-/// prevent logical errors like adding a stock (a point-in-time value) to
-/// another stock.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TemporalType {
-    /// A value measured at a specific point in time (e.g., a balance sheet item like 'Debt Balance').
     Stock,
-    /// A value measured over a period of time (e.g., an income statement item like 'Revenue').
     Flow,
 }
 
@@ -73,6 +63,14 @@ pub enum Node {
     },
     /// A placeholder for a variable whose value is determined by the solver.
     SolverVariable { meta: NodeMetadata },
+    /// A node representing a constraint `LHS - RHS = 0`. This is a structural
+    /// node used to define the solver's objective function. The actual calculation
+    /// of the residual is handled by a separate `Formula` node.
+    Constraint {
+        lhs: NodeId,
+        rhs: NodeId,
+        meta: NodeMetadata,
+    },
 }
 
 impl Node {
@@ -86,6 +84,7 @@ impl Node {
             Node::Constant { meta, .. } => meta,
             Node::Formula { meta, .. } => meta,
             Node::SolverVariable { meta } => meta,
+            Node::Constraint { meta, .. } => meta,
         }
     }
 
@@ -95,6 +94,7 @@ impl Node {
             Node::Constant { meta, .. } => meta,
             Node::Formula { meta, .. } => meta,
             Node::SolverVariable { meta } => meta,
+            Node::Constraint { meta, .. } => meta,
         }
     }
 }

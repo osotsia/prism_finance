@@ -2,9 +2,8 @@
 
 use super::edge::Edge;
 use super::node::{Node, NodeId, NodeMetadata, Operation};
-use petgraph::{algo::toposort, stable_graph::StableDiGraph};
-use std::collections::HashMap;
-
+use petgraph::{algo::toposort, stable_graph::StableDiGraph, visit::Bfs};
+use std::collections::{HashMap, HashSet};
 /// A computation graph representing the financial model.
 ///
 /// This structure acts as a "blueprint" of the model. It contains the
@@ -68,11 +67,25 @@ impl ComputationGraph {
         toposort(&self.graph, None)
     }
 
-
-
     /// Returns the total number of nodes currently in the graph.
     pub fn node_count(&self) -> usize {
         self.graph.node_count()
+    }
+
+    /// Returns a set of all node IDs that are downstream of (i.e., depend on)
+    /// any of the nodes in the initial set. Includes the initial nodes.
+    pub fn downstream_from(&self, initial_set: &[NodeId]) -> HashSet<NodeId> {
+        let mut downstream = HashSet::new();
+        for &start_node in initial_set {
+            if downstream.contains(&start_node) {
+                continue;
+            }
+            let mut bfs = Bfs::new(&self.graph, start_node);
+            while let Some(node_id) = bfs.next(&self.graph) {
+                downstream.insert(node_id);
+            }
+        }
+        downstream
     }
 }
 

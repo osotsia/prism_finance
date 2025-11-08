@@ -5,12 +5,11 @@
 use pyo3::prelude::*;
 
 // --- Module Imports ---
-// This brings the core logic into scope.
+mod computation;
 mod graph;
-// This brings the Python bindings into scope.
 mod graph_ffi;
-
-mod type_system; 
+mod solver;
+mod type_system;
 
 // --- Placeholder function to test the bridge ---
 /// A simple function to confirm the Rust core is callable from Python.
@@ -27,8 +26,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // 1. Add the placeholder version function.
     m.add_function(wrap_pyfunction!(rust_core_version, m)?)?;
 
-    // 2. Add the wrapped ComputationGraph class.
+    // 2. Add the wrapped classes.
     m.add_class::<graph_ffi::PyComputationGraph>()?;
+    m.add_class::<graph_ffi::PyLedger>()?;
 
     Ok(())
 }

@@ -65,7 +65,6 @@ class Var:
 
         new_name = f"({self._name} {op_symbol} {other._name})"
         
-        # Call the unified FFI function for binary operations.
         child_id = self._canvas._graph.add_binary_formula(
             op_name=op_name,
             parents=[self._node_id, other._node_id],
@@ -85,19 +84,20 @@ class Var:
     def __truediv__(self, other: 'Var') -> 'Var':
         return self._create_binary_op(other, "divide", "/")
 
+    def must_equal(self, other: 'Var') -> None:
+        """
+        Declares a constraint that this Var must equal another Var.
+        This is syntactic sugar for `canvas.must_equal(self, other)`.
+        """
+        if not isinstance(other, Var) or self._canvas is not other._canvas:
+            raise ValueError("Constraints can only be set between Vars from the same Canvas.")
+        self._canvas.must_equal(self, other)
+
     def prev(self, lag: int = 1, *, default: 'Var') -> 'Var':
-        """
-        Creates a new Var that represents the value of this Var in a previous period.
-        
-        Args:
-            lag: The number of periods to look back (default is 1).
-            default: The Var to use as a value for the initial periods.
-        """
         if not isinstance(default, Var) or self._canvas is not default._canvas:
             raise ValueError("Default for .prev() must be a Var from the same Canvas.")
         if not isinstance(lag, int) or lag < 1:
             raise ValueError("Lag must be a positive integer.")
-
         new_name = f"{self._name}.prev(lag={lag})"
         child_id = self._canvas._graph.add_formula_previous_value(
             main_parent_idx=self._node_id,
@@ -128,23 +128,10 @@ class Var:
             unit=unit,
             temporal_type=temporal_type
         )
-
-        # A warning is issued only if a new value is provided for an existing,
-        # different value, preventing warnings on initial type declaration.
         if unit is not None and old_unit is not None and unit != old_unit:
-            warnings.warn(
-                f"Overwriting existing unit '{old_unit}' with '{unit}' for Var '{self._name}'.",
-                UserWarning,
-                stacklevel=2
-            )
-        
+            warnings.warn(f"Overwriting existing unit '{old_unit}' with '{unit}' for Var '{self._name}'.", UserWarning, stacklevel=2)
         if temporal_type is not None and old_temporal_type is not None and temporal_type != old_temporal_type:
-             warnings.warn(
-                f"Overwriting existing temporal_type '{old_temporal_type}' with '{temporal_type}' for Var '{self._name}'.",
-                UserWarning,
-                stacklevel=2
-            )
-
+             warnings.warn(f"Overwriting existing temporal_type '{old_temporal_type}' with '{temporal_type}' for Var '{self._name}'.", UserWarning, stacklevel=2)
         return self
 
 
@@ -157,63 +144,84 @@ class Canvas:
     def __init__(self):
         self._graph = _core._ComputationGraph()
         self._token = None
+        self._last_ledger: _core._Ledger = None
 
     def __enter__(self) -> 'Canvas':
-        """Sets this Canvas as the active one for the current context."""
         if self._token is not None:
             raise RuntimeError("Canvas context is not re-entrant.")
         self._token = _active_canvas.set(self)
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        """Resets the active canvas, exiting the context."""
         _active_canvas.reset(self._token)
         self._token = None
 
-    def add_var(
-        self,
-        value: Union[int, float, List[float]],
-        name: str,
-        *, 
-        unit: str = None,
-        temporal_type: str = None,
-    ) -> Var:
+    def solver_var(self, name: str) -> Var:
         """
-        Adds a new constant variable to the graph with optional type metadata.
+        Adds a new variable to the graph whose value will be determined by the solver.
         
-        DEPRECATED: Use the `Var(...)` constructor directly inside a `with Canvas():` block.
+        Args:
+            name: A unique, human-readable name for the variable.
+            
+        Returns:
+            A `Var` instance representing the solver variable.
         """
-        warnings.warn(
-            "'Canvas.add_var' is deprecated. Use 'Var(...)' directly inside a 'with Canvas():' block.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        val_list = [float(value)] if isinstance(value, (int, float)) else [float(v) for v in value]
-        
-        node_id = self._graph.add_constant_node(
-            value=val_list,
-            name=name,
-            unit=unit,
-            temporal_type=temporal_type
-        )
+        node_id = self._graph.add_solver_variable(name=name)
         return Var._from_existing_node(canvas=self, node_id=node_id, name=name)
+
+    def must_equal(self, var1: Var, var2: Var) -> None:
+        """
+        Declares a constraint that two Vars must be equal. This forms the basis
+        of the system of equations for the solver.
+        """
+        constraint_name = f"Constraint: {var1._name} == {var2._name}"
+        self._graph.must_equal(var1._node_id, var2._node_id, name=constraint_name)
     
-    def validate(self) -> None:
+    def solve(self) -> None:
         """
-        Performs static analysis on the graph.
+        Solves the system of equations and constraints defined in the graph.
         
-        This process involves two steps for each formula node:
-        1. Inference: The type is inferred from its parents. Errors like
-           adding "USD" and "MWh" are caught here.
-        2. Verification: If a type was explicitly set using `.declare_type()`,
-           the inferred type is checked against the declared type.
+        This orchestrates the entire process:
+        1. Pre-computes all values that are independent of the solver variables.
+        2. Runs the numerical solver to find the values of the solver variables.
+        3. Runs a final computation pass to calculate all values that depend on the solved variables.
+        
+        The final, complete set of results is stored internally. Use `.compute(var)` to retrieve them.
         """
+        self._last_ledger = self._graph.solve()
+
+    def compute(self, target_var: Var) -> Union[float, List[float]]:
+        """
+        Retrieves the value of a target Var from the most recent `solve()` execution.
+        
+        Args:
+            target_var: The Var whose value you want to retrieve.
+        
+        Returns:
+            The computed value, either as a float (for scalar results) or a list of floats
+            (for time-series results).
+            
+        Raises:
+            RuntimeError: If `.solve()` has not been called yet.
+            ValueError: If the value for the target Var is not found in the results.
+        """
+        if self._last_ledger is None:
+            raise RuntimeError("Must call .solve() before requesting a computed value.")
+        
+        values = self._last_ledger.get_value(target_var._node_id)
+        if values is None:
+            # This can happen if the node was not part of the final computation,
+            # which indicates a potential logic error in the graph.
+            raise ValueError(f"Value for '{target_var._name}' not found in the ledger.")
+            
+        # For scalar models, which are common in solver contexts, returning a single
+        # float is more convenient for the user.
+        return values[0] if len(values) == 1 else values
+
+    def validate(self) -> None:
         self._graph.validate()
 
     def get_evaluation_order(self) -> List[int]:
-        """
-        Computes a valid evaluation order for all nodes.
-        """
         return self._graph.topological_order()
 
     @property
