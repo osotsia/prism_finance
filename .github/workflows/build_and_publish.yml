@@ -46,7 +46,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-pip-
 
-      # FIX: Install IPOPT and its own dependencies (BLAS, LAPACK)
       - name: Install System Dependencies (Linux)
         run: |
           sudo apt-get update
@@ -79,17 +78,14 @@ jobs:
     needs: test_and_lint
     runs-on: ${{ matrix.platform }}
     strategy:
+      # FIX: Remove windows-latest from the build matrix as IPOPT is not available.
       matrix:
-        platform: [ubuntu-latest, windows-latest, macos-latest]
+        platform: [ubuntu-latest, macos-latest]
         cpython-version: ["3.10", "3.11", "3.12"]
-        exclude:
-          - platform: macos-14
-            cpython-version: "3.8"
 
     steps:
       - uses: actions/checkout@v4
 
-      # FIX: Install IPOPT and its dependencies for each OS in the build matrix
       - name: Install System Dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -99,10 +95,6 @@ jobs:
       - name: Install System Dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install ipopt
-      
-      - name: Install System Dependencies (Windows)
-        if: runner.os == 'Windows'
-        run: vcpkg install ipopt:x64-windows
 
       - name: Build binary wheel
         uses: PyO3/maturin-action@v1
