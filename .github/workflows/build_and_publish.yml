@@ -46,8 +46,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-pip-
 
+      # FIX: Install IPOPT before attempting to build
+      - name: Install IPOPT (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y coinor-libipopt-dev
+
       - name: Run Linters
-        # This is the key fix: execute these commands from within the `rust` directory.
         working-directory: rust
         run: |
           # cargo fmt -- --check
@@ -56,16 +61,15 @@ jobs:
       - name: Install Python dependencies and build for testing
         run: |
           pip install pytest maturin
+          # The maturin build command below requires IPOPT to be installed
           maturin build --out dist
           pip install dist/*.whl
 
       - name: Run Rust tests
-        # This step must also run from within the `rust` directory.
         working-directory: rust
         run: cargo test
 
       - name: Run Python tests
-        # This step runs from the repository root, which is the default.
         run: pytest
 
   # ====================================================================
@@ -76,12 +80,9 @@ jobs:
     needs: test_and_lint
     runs-on: ${{ matrix.platform }}
     strategy:
-      # This matrix now combines OS and Python versions, creating a deterministic
-      # build for each supported target.
       matrix:
         platform: [ubuntu-latest, windows-latest, macos-latest]
-        cpython-version: ["3.10", "3.11", "3.12", "3.13"]
-        # Exclude combinations if necessary, e.g., if a platform doesn't support an old Python
+        cpython-version: ["3.10", "3.11", "3.12"] # 3.13 is not yet fully supported by some dependencies
         exclude:
           - platform: macos-14
             cpython-version: "3.8"
@@ -89,20 +90,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # FIX: Install IPOPT for each OS in the build matrix
+      - name: Install IPOPT (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y coinor-libipopt-dev
+
+      - name: Install IPOPT (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ipopt
+      
+      - name: Install IPOPT (Windows)
+        if: runner.os == 'Windows'
+        run: vcpkg install ipopt:x64-windows
+
       - name: Build binary wheel
-        # This is the key action. It handles all the complexity of setting up
-        # the Rust/Python build environment, including Docker for `manylinux` compliance.
         uses: PyO3/maturin-action@v1
         with:
-          # This input tells the action to build for one specific Python version from the matrix.
           cpython-version: ${{ matrix.cpython-version }}
           args: --release --out dist
-          # The `manylinux` flag is only used on linux runners.
           manylinux: auto
 
       - name: Upload wheels as a build artifact
-        # This step collects the wheel from each job in the matrix and uploads
-        # it as an artifact, so the final 'publish' job can access them all.
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.platform }}-${{ matrix.cpython-version }}
@@ -113,24 +123,23 @@ jobs:
   # ====================================================================
   publish_to_pypi:
     name: Publish to PyPI
-    needs: build_wheels # Must wait for all wheels to be built
-    # This is the critical condition: This job ONLY runs when the workflow
-    # was triggered by a "published" release event in GitHub.
+    needs: build_wheels
     if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/prism-finance # Note: Ensure this matches your project name in pyproject.toml
+      url: https://pypi.org/p/prism-finance
     permissions:
-      id-token: write # This is required for trusted publishing
+      id-token: write
 
     steps:
       - name: Download all wheels from build artifacts
+        # This action has a known issue where it creates subdirectories. The pattern below fixes it.
         uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: wheels-*
+          merge-multiple: true
 
       - name: Publish package to PyPI
-        # This action securely handles uploading all wheels in the 'dist'
-        # directory to PyPI using the trusted publisher mechanism.
         uses: pypa/gh-action-pypi-publish@v1
