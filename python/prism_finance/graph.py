@@ -106,14 +106,14 @@ class Var:
     def __truediv__(self, other: 'Var') -> 'Var':
         return self._create_binary_op(other, "divide", "/")
 
-    # def must_equal(self, other: 'Var') -> None:
-    #     """
-    #     Declares a constraint that this Var must equal another Var.
-    #     This is syntactic sugar for `canvas.must_equal(self, other)`.
-    #     """
-    #     if not isinstance(other, Var) or self._canvas is not other._canvas:
-    #         raise ValueError("Constraints can only be set between Vars from the same Canvas.")
-    #     self._canvas.must_equal(self, other)
+    def must_equal(self, other: 'Var') -> None:
+        """
+        Declares a constraint that this Var must equal another Var.
+        This is syntactic sugar for `canvas.must_equal(self, other)`.
+        """
+        if not isinstance(other, Var) or self._canvas is not other._canvas:
+            raise ValueError("Constraints can only be set between Vars from the same Canvas.")
+        self._canvas.must_equal(self, other)
 
     def prev(self, lag: int = 1, *, default: 'Var') -> 'Var':
         if not isinstance(default, Var) or self._canvas is not default._canvas:
@@ -178,26 +178,26 @@ class Canvas:
         _active_canvas.reset(self._token)
         self._token = None
 
-    # def solver_var(self, name: str) -> Var:
-    #     """
-    #     Adds a new variable to the graph whose value will be determined by the solver.
+    def solver_var(self, name: str) -> Var:
+        """
+        Adds a new variable to the graph whose value will be determined by the solver.
         
-    #     Args:
-    #         name: A unique, human-readable name for the variable.
+        Args:
+            name: A unique, human-readable name for the variable.
             
-    #     Returns:
-    #         A `Var` instance representing the solver variable.
-    #     """
-    #     node_id = self._graph.add_solver_variable(name=name)
-    #     return Var._from_existing_node(canvas=self, node_id=node_id, name=name)
+        Returns:
+            A `Var` instance representing the solver variable.
+        """
+        node_id = self._graph.add_solver_variable(name=name)
+        return Var._from_existing_node(canvas=self, node_id=node_id, name=name)
 
-    # def must_equal(self, var1: Var, var2: Var) -> None:
-    #     """
-    #     Declares a constraint that two Vars must be equal. This forms the basis
-    #     of the system of equations for the solver.
-    #     """
-    #     constraint_name = f"Constraint: {var1._name} == {var2._name}"
-    #     self._graph.must_equal(var1._node_id, var2._node_id, name=constraint_name)
+    def must_equal(self, var1: Var, var2: Var) -> None:
+        """
+        Declares a constraint that two Vars must be equal. This forms the basis
+        of the system of equations for the solver.
+        """
+        constraint_name = f"Constraint: {var1._name} == {var2._name}"
+        self._graph.must_equal(var1._node_id, var2._node_id, name=constraint_name)
     
     def solve(self) -> None:
         """

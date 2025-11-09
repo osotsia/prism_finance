@@ -94,6 +94,9 @@ impl<'a> Tracer<'a> {
             }
             Node::SolverVariable { .. } => {
                 let _ = writeln!(self.output, "{} [SOLVED VALUE]", value_str);
+                let new_prefix_stem = format!("{}  ", prefix.replace("`--", "|--").replace(" ", " "));
+                let _ = writeln!(self.output, "{}|", new_prefix_stem);
+                let _ = writeln!(self.output, "{}`-- Determined by Internal IPOPT Solver", new_prefix_stem);
             }
             Node::Constraint { .. } => {
                  let _ = writeln!(self.output, " [CONSTRAINT]");

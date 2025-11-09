@@ -196,11 +196,24 @@ impl PyComputationGraph {
         let precompute_targets: Vec<NodeId> = self.graph.graph.node_indices().filter(|id| !solver_dependent_nodes.contains(id)).collect();
         engine.compute(&precompute_targets, &mut base_ledger).map_err(to_py_err)?;
 
+        // Determine the model's time-series length by inspecting the max length
+        // of any constant that is an input to the solver system.
+        let residual_predecessors = self.graph.upstream_from(&residual_nodes);
+        let mut model_len = 1;
+        for node_id in residual_predecessors {
+            if let Some(Node::Constant { .. }) = self.graph.get_node(node_id) {
+                if let Some(val) = self.graph.get_constant_value(node_id) {
+                    model_len = model_len.max(val.len());
+                }
+            }
+        }
+
         // Set up and run the solver.
         let problem = PrismProblem { 
             graph: &self.graph,
             variables: solver_vars,
             residuals: residual_nodes,
+            model_len,
             sync_engine: engine,
             base_ledger,
         };

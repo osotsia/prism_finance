@@ -10,6 +10,8 @@ pub struct PrismProblem<'a> {
     pub(crate) variables: Vec<NodeId>,
     /// The node IDs of the residual formulas (LHS - RHS) for each constraint.
     pub(crate) residuals: Vec<NodeId>,
+    /// The length of the time-series dimension of the model.
+    pub(crate) model_len: usize,
     /// A synchronous, single-threaded evaluator for use inside the solver loop.
     pub(crate) sync_engine: ComputationEngine<'a>,
     /// A template ledger containing all pre-computed, non-solver-dependent values.

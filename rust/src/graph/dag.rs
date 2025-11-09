@@ -103,6 +103,23 @@ impl ComputationGraph {
         }
         downstream
     }
+
+    /// Returns a set of all node IDs that are upstream of (i.e., are dependencies for)
+    /// any of the nodes in the initial set. Includes the initial nodes.
+    pub fn upstream_from(&self, initial_set: &[NodeId]) -> HashSet<NodeId> {
+        let mut upstream = HashSet::new();
+        let reversed_graph = petgraph::visit::Reversed(&self.graph);
+        for &start_node in initial_set {
+            if upstream.contains(&start_node) {
+                continue;
+            }
+            let mut bfs = Bfs::new(reversed_graph, start_node);
+            while let Some(node_id) = bfs.next(reversed_graph) {
+                upstream.insert(node_id);
+            }
+        }
+        upstream
+    }
 }
 
 // --- Improved Test Suite ---
@@ -279,5 +296,19 @@ mod tests {
 
         let default_edge_idx = graph.graph.find_edge(default_node_id, formula_id).unwrap();
         assert_eq!(*graph.graph.edge_weight(default_edge_idx).unwrap(), Edge::DefaultValue);
+    }
+
+    #[test]
+    fn test_upstream_from() {
+        let (mut graph, ids) = create_graph_with_constants(5);
+        // 0 -> 2 -> 4
+        // 1 -> 3 -> 4
+        graph.add_dependency(ids[0], ids[2], Edge::Arithmetic);
+        graph.add_dependency(ids[1], ids[3], Edge::Arithmetic);
+        graph.add_dependency(ids[2], ids[4], Edge::Arithmetic);
+        graph.add_dependency(ids[3], ids[4], Edge::Arithmetic);
+        let upstream = graph.upstream_from(&[ids[4]]);
+        let expected: HashSet<NodeId> = [ids[0], ids[1], ids[2], ids[3], ids[4]].iter().cloned().collect();
+        assert_eq!(upstream, expected);
     }
 }

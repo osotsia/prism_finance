@@ -22,6 +22,9 @@ pub enum ComputationError {
     #[error("Solver failed to converge: {0}")]
     SolverDidNotConverge(String),
 
+    #[error("Solver configuration error: {0}")]
+    SolverConfiguration(String),
+
     #[error("Graph contains a cycle")]
     CycleDetected,
 
@@ -53,5 +56,19 @@ impl Ledger {
         for id in node_ids {
             self.values.remove(&id);
         }
+    }
+
+    /// Checks if any node in a given list corresponds to a time-series vector
+    /// in the ledger.
+    pub fn is_timeseries(&self, node_ids: &[NodeId]) -> bool {
+        node_ids.iter().any(|id| {
+            if let Some(Ok(val)) = self.values.get(id) {
+                val.len() > 1
+            } else {
+                // If not in ledger, assume scalar. This path shouldn't be hit
+                // for solver vars, as they get default values.
+                false
+            }
+        })
     }
 }

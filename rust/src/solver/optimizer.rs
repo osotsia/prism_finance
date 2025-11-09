@@ -1,117 +1,124 @@
-//! Implements the argmin::core traits for the PrismProblem.
+//! Integrates with the IPOPT NLP solver to find solutions to constrained problems.
 
-use crate::computation::ComputationError;
+use crate::computation::{ComputationError, Ledger};
+use crate::solver::ipopt_adapter;
+use crate::solver::ipopt_ffi;
 use crate::solver::problem::PrismProblem;
-use argmin::core::{CostFunction, Error, Executor, Gradient, Hessian, State};
-use argmin::solver::trustregion::{Dogleg, TrustRegion};
-use nalgebra::{DMatrix, DVector};
+use libc::c_int;
+use std::ffi::c_void;
 use std::sync::Arc;
 
-/// Implements the cost function for the solver.
-/// The cost is the sum of the squares of the constraint residuals.
-impl CostFunction for PrismProblem<'_> {
-    type Param = DVector<f64>;
-    type Output = f64;
-
-    fn cost(&self, p: &Self::Param) -> Result<Self::Output, Error> {
-        let mut ledger = self.base_ledger.clone();
-
-        // 1. Set the current guess for solver variables in the ledger.
-        for (i, var_id) in self.variables.iter().enumerate() {
-            // Assuming all solver vars are scalars for now.
-            ledger.insert(*var_id, Ok(Arc::new(vec![p[i]])));
-        }
-
-        // 2. Compute the values of the residual nodes based on the current guess.
-        self.sync_engine
-            .compute(&self.residuals, &mut ledger)
-            .map_err(|e| Error::msg(e.to_string()))?;
-
-        // 3. Calculate the cost: sum of squares of the residuals.
-        let mut sum_sq: f64 = 0.0;
-        for residual_id in &self.residuals {
-            if let Some(Ok(val)) = ledger.get(*residual_id) {
-                // Assuming residuals are also scalars.
-                sum_sq += val.get(0).unwrap_or(&0.0).powi(2);
-            } else {
-                let msg = format!("Failed to compute residual for node {}", residual_id.index());
-                return Err(Error::msg(msg));
-            }
-        }
-
-        Ok(sum_sq)
-    }
-}
-
-/// Implements the gradient using central-difference finite differences.
-impl Gradient for PrismProblem<'_> {
-    type Param = DVector<f64>;
-    type Gradient = DVector<f64>;
-
-    fn gradient(&self, p: &Self::Param) -> Result<Self::Gradient, Error> {
-        // Use the free function from finitediff instead of an extension method.
-        let f = |x: &DVector<f64>| self.cost(x).unwrap();
-        Ok(finitediff::central::gradient(p, f))
-    }
-}
-
-/// Implements the Hessian using central-difference finite differences.
-impl Hessian for PrismProblem<'_> {
-    type Param = DVector<f64>;
-    type Hessian = DMatrix<f64>;
-
-    fn hessian(&self, p: &Self::Param) -> Result<Self::Hessian, Error> {
-        // Use the free function from finitediff.
-        let f = |x: &DVector<f64>| self.cost(x).unwrap();
-        Ok(finitediff::central::hessian(p, f))
-    }
-}
-
 /// The main entry point for the solver.
-pub fn solve(problem: PrismProblem) -> Result<crate::computation::Ledger, ComputationError> {
-    let num_vars = problem.variables.len();
+pub fn solve(problem: PrismProblem) -> Result<Ledger, ComputationError> {
+    let model_len = problem.model_len;
+    let num_vars = problem.variables.len() * model_len;
+    let num_constraints = problem.residuals.len() * model_len;
+
     if num_vars == 0 {
+        // Nothing to solve, return the pre-computed ledger.
         return Ok(problem.base_ledger);
     }
+    if num_constraints == 0 {
+        return Err(ComputationError::SolverConfiguration(
+            "Solver variables exist but no constraints were defined.".to_string(),
+        ));
+    }
+
+    // --- 1. Define bounds ---
+    let mut x_l: Vec<ipopt_ffi::Number> = vec![ipopt_ffi::IPOPT_NEGINF; num_vars];
+    let mut x_u: Vec<ipopt_ffi::Number> = vec![ipopt_ffi::IPOPT_POSINF; num_vars];
+    // All constraints are equality constraints, so their lower and upper bounds are 0.
+    let mut g_l: Vec<ipopt_ffi::Number> = vec![0.0; num_constraints];
+    let mut g_u: Vec<ipopt_ffi::Number> = vec![0.0; num_constraints];
+
+    // --- 2. Initial guess ---
+    let mut x_init: Vec<ipopt_ffi::Number> = vec![0.0; num_vars];
+
+    // --- 3. Box user data to pass to callbacks ---
+    // The `PrismProblem` contains all the context our callbacks need.
+    // We put it on the heap and pass a raw pointer to IPOPT.
+    let user_data = Box::into_raw(Box::new(problem));
+
+    // --- 4. Create the IPOPT problem ---
+    let ipopt_problem = unsafe {
+        ipopt_ffi::CreateIpoptProblem(
+            num_vars as c_int,
+            x_l.as_mut_ptr(),
+            x_u.as_mut_ptr(),
+            num_constraints as c_int,
+            g_l.as_mut_ptr(),
+            g_u.as_mut_ptr(),
+            (num_vars * num_constraints) as c_int, // Non-zeros in Jacobian (dense)
+            0,                                    // Non-zeros in Hessian (not used)
+            ipopt_ffi::FR_C_STYLE,
+            Some(ipopt_adapter::eval_f),
+            Some(ipopt_adapter::eval_g),
+            Some(ipopt_adapter::eval_grad_f),
+            Some(ipopt_adapter::eval_jac_g),
+            None, // No Hessian evaluation needed
+            user_data as *mut c_void,
+        )
+    };
+
+    if ipopt_problem.is_null() {
+        // Must reclaim the Box if problem creation fails.
+        let _ = unsafe { Box::from_raw(user_data) };
+        return Err(ComputationError::SolverConfiguration(
+            "IPOPT failed to create problem.".to_string(),
+        ));
+    }
+
+    // --- Set solver options (optional) ---
+    unsafe {
+        // Suppress verbose IPOPT banner and output.
+        ipopt_ffi::AddIpoptIntOption(ipopt_problem, "print_level\0".as_ptr() as *const i8, 0);
+        ipopt_ffi::AddIpoptNumOption(ipopt_problem, "tol\0".as_ptr() as *const i8, 1e-9);
+    };
+
+    // --- 5. Solve the problem ---
+    let mut solve_status: ipopt_ffi::ApplicationReturnStatus;
+    let mut final_obj_val: ipopt_ffi::Number = 0.0;
     
-    // Define an initial guess for the parameters (solver variables).
-    let init_param = DVector::from_vec(vec![0.0; num_vars]);
-
-    // Instantiate the Dogleg method as the subproblem solver.
-    let dogleg: Dogleg<f64> = Dogleg::new();
-
-    // Instantiate the main TrustRegion solver, providing it the Dogleg solver.
-    let solver: TrustRegion<Dogleg<f64>, f64> = TrustRegion::new(dogleg);
-
-    // Run the optimization.
-    let res = Executor::new(problem, solver)
-        .configure(|state| {
-            state
-                .param(init_param)
-                .max_iters(100)
-                .target_cost(1e-12) // Stop when sum of squares is very close to zero.
-        })
-        .run()
-        .map_err(|e| ComputationError::SolverDidNotConverge(e.to_string()))?;
-
-    // Check for convergence to a valid solution (cost must be near zero).
-    let final_cost = res.state().get_best_cost();
-    if final_cost > 1e-9 {
-        return Err(ComputationError::SolverDidNotConverge(format!(
-            "Solver finished but final residual error was high: {:.2e}",
-            final_cost.sqrt()
-        )));
+    // IPOPT writes its solution back into the initial guess vector `x_init`.
+    // We will later copy this into `final_x`.
+    
+    unsafe {
+        solve_status = ipopt_ffi::IpoptSolve(
+            ipopt_problem,
+            x_init.as_mut_ptr(),
+            g_l.as_mut_ptr(), // IPOPT can write final constraint values here, but we don't need them.
+            &mut final_obj_val,
+            std::ptr::null_mut(), // Multiplier info not needed
+            std::ptr::null_mut(), // Multiplier info not needed
+            std::ptr::null_mut(), // Multiplier info not needed
+            user_data as *mut c_void,
+        );
     }
 
-    // Extract the problem and the solution from the final state.
-    let problem_ref = res.state().get_problem().unwrap();
-    let best_params = res.state().get_best_param().unwrap();
+    // The solution is now in `x_init`.
+    let final_x = x_init;
 
-    // Create the final ledger with the solved values.
-    let mut final_ledger = problem_ref.base_ledger.clone();
-    for (i, var_id) in problem_ref.variables.iter().enumerate() {
-        final_ledger.insert(*var_id, Ok(Arc::new(vec![best_params[i]])));
+    // --- 6. Clean up ---
+    unsafe {
+        ipopt_ffi::FreeIpoptProblem(ipopt_problem);
+    };
+    // IMPORTANT: Reclaim the Box to deallocate the PrismProblem.
+    let solved_problem = unsafe { Box::from_raw(user_data) };
+
+    // --- 7. Process results ---
+    if solve_status == ipopt_ffi::ApplicationReturnStatus::Solve_Succeeded {
+        let mut final_ledger = solved_problem.base_ledger.clone();
+        for (i, var_id) in solved_problem.variables.iter().enumerate() {
+            let start_idx = i * model_len;
+            let end_idx = start_idx + model_len;
+            let var_values = final_x[start_idx..end_idx].to_vec();
+            final_ledger.insert(*var_id, Ok(Arc::new(var_values)));
+        }
+        Ok(final_ledger)
+    } else {
+        Err(ComputationError::SolverDidNotConverge(format!(
+            "IPOPT failed with status code: {:?}",
+            solve_status
+        )))
     }
-
-    Ok(final_ledger)
 }
