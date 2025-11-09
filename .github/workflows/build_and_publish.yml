@@ -1,6 +1,8 @@
 # .github/workflows/build_and_publish.yml
 name: Build and Publish Prism
 
+# This workflow is triggered on pushes and pull requests to the main branch,
+# and most importantly, when a new Release is published in GitHub.
 on:
   push:
     branches: [ main ]
@@ -8,25 +10,28 @@ on:
     branches: [ main ]
   release:
     types: [ published ]
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual triggering from the GitHub Actions UI
 
 jobs:
   # ====================================================================
-  # Job 1: Test & Lint (Runs on the host runner)
+  # Job 1: Run Linters and Tests on a single platform for quick feedback
   # ====================================================================
   test_and_lint:
     name: Test & Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
@@ -38,34 +43,42 @@ jobs:
             ~/.cache/pip
             rust/target/
           key: ${{ runner.os }}-cargo-pip-${{ hashFiles('**/Cargo.lock', '**/pyproject.toml') }}
-      - name: Install System Dependencies (Linux Host)
+          restore-keys: |
+            ${{ runner.os }}-cargo-pip-
+
+      - name: Install System Dependencies (Linux)
         run: |
           sudo apt-get update
           sudo apt-get install -y coinor-libipopt-dev liblapack-dev libblas-dev
+
       - name: Run Linters
         working-directory: rust
         run: |
           # cargo fmt -- --check
           # cargo clippy -- -D warnings
+
       - name: Install Python dependencies and build for testing
         run: |
           pip install pytest maturin
           maturin build --out dist
           pip install dist/*.whl
+
       - name: Run Rust tests
         working-directory: rust
         run: cargo test
+
       - name: Run Python tests
         run: pytest
 
   # ====================================================================
-  # Job 2: Build Wheels (Runs on host, but Linux builds are inside Docker)
+  # Job 2: Build binary wheels for all target platforms
   # ====================================================================
   build_wheels:
     name: Build wheels on ${{ matrix.platform }} for Python ${{ matrix.cpython-version }}
     needs: test_and_lint
     runs-on: ${{ matrix.platform }}
     strategy:
+      # FIX: Remove windows-latest from the build matrix as IPOPT is not available.
       matrix:
         platform: [ubuntu-latest, macos-latest]
         cpython-version: ["3.10", "3.11", "3.12"]
@@ -73,23 +86,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # This step installs dependencies on the macOS HOST runner.
+      - name: Install System Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y coinor-libipopt-dev liblapack-dev libblas-dev
+
       - name: Install System Dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install ipopt
 
-      # This step builds the wheel. For Linux, it uses a Docker container.
       - name: Build binary wheel
         uses: PyO3/maturin-action@v1
         with:
           cpython-version: ${{ matrix.cpython-version }}
           args: --release --out dist
           manylinux: auto
-          # FIX: This script runs INSIDE the manylinux Docker container.
-          # It uses 'yum' (the container's package manager) to install dependencies.
-          before-script: |
-            yum install -y epel-release
-            yum install -y ipopt-devel lapack-devel blas-devel
 
       - name: Upload wheels as a build artifact
         uses: actions/upload-artifact@v4
@@ -98,7 +110,7 @@ jobs:
           path: dist
 
   # ====================================================================
-  # Job 3: Publish to PyPI
+  # Job 3: Publish the wheels to PyPI (only on a new release)
   # ====================================================================
   publish_to_pypi:
     name: Publish to PyPI
