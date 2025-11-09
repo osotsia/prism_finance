@@ -35,7 +35,7 @@ class Var:
             raise ValueError("A 'name' must be provided for each Var.")
 
         self._canvas = get_active_canvas()
-        self._name = name
+        self._py_name = name
 
         val_list = [float(value)] if isinstance(value, (int, float)) else [float(v) for v in value]
         
@@ -52,11 +52,23 @@ class Var:
         var_instance = cls.__new__(cls)
         var_instance._canvas = canvas
         var_instance._node_id = node_id
-        var_instance._name = name
+        var_instance._py_name = name
+        # The name is already set in the core graph during formula creation.
         return var_instance
 
+    @property
+    def name(self) -> str:
+        """The human-readable name of the Var."""
+        return self._py_name
+        
+    @name.setter
+    def name(self, new_name: str):
+        """Sets the name of the Var, updating both Python and the core engine."""
+        self._py_name = new_name
+        self._canvas._graph.set_node_name(self._node_id, new_name)
+
     def __repr__(self) -> str:
-        return f"Var(name='{self._name}', id={self._node_id})"
+        return f"Var(name='{self.name}', id={self._node_id})"
     
     def set(self, value: Union[int, float, List[float]]):
         """
@@ -71,7 +83,7 @@ class Var:
             self._canvas._graph.update_constant_node(self._node_id, val_list)
         except ValueError as e:
             # Re-raise with a more user-friendly message
-            raise TypeError(f"Cannot set value for Var '{self._name}'. It may not be a constant input Var.") from e
+            raise TypeError(f"Cannot set value for Var '{self.name}'. It may not be a constant input Var.") from e
 
     def trace(self):
         """
@@ -85,7 +97,7 @@ class Var:
         if not isinstance(other, Var) or self._canvas is not other._canvas:
             raise ValueError("Operations are only supported between Vars from the same Canvas.")
 
-        new_name = f"({self._name} {op_symbol} {other._name})"
+        new_name = f"({self.name} {op_symbol} {other.name})"
         
         child_id = self._canvas._graph.add_binary_formula(
             op_name=op_name,
@@ -120,7 +132,7 @@ class Var:
             raise ValueError("Default for .prev() must be a Var from the same Canvas.")
         if not isinstance(lag, int) or lag < 1:
             raise ValueError("Lag must be a positive integer.")
-        new_name = f"{self._name}.prev(lag={lag})"
+        new_name = f"{self.name}.prev(lag={lag})"
         child_id = self._canvas._graph.add_formula_previous_value(
             main_parent_idx=self._node_id,
             default_parent_idx=default._node_id,
@@ -151,9 +163,9 @@ class Var:
             temporal_type=temporal_type
         )
         if unit is not None and old_unit is not None and unit != old_unit:
-            warnings.warn(f"Overwriting existing unit '{old_unit}' with '{unit}' for Var '{self._name}'.", UserWarning, stacklevel=2)
+            warnings.warn(f"Overwriting existing unit '{old_unit}' with '{unit}' for Var '{self.name}'.", UserWarning, stacklevel=2)
         if temporal_type is not None and old_temporal_type is not None and temporal_type != old_temporal_type:
-             warnings.warn(f"Overwriting existing temporal_type '{old_temporal_type}' with '{temporal_type}' for Var '{self._name}'.", UserWarning, stacklevel=2)
+             warnings.warn(f"Overwriting existing temporal_type '{old_temporal_type}' with '{temporal_type}' for Var '{self.name}'.", UserWarning, stacklevel=2)
         return self
 
 
@@ -196,7 +208,7 @@ class Canvas:
         Declares a constraint that two Vars must be equal. This forms the basis
         of the system of equations for the solver.
         """
-        constraint_name = f"Constraint: {var1._name} == {var2._name}"
+        constraint_name = f"Constraint: {var1.name} == {var2.name}"
         self._graph.must_equal(var1._node_id, var2._node_id, name=constraint_name)
     
     def solve(self) -> None:
@@ -270,7 +282,7 @@ class Canvas:
         if values is None:
             # This can happen if the node was not part of the final computation,
             # which indicates a potential logic error in the graph.
-            raise ValueError(f"Value for '{target_var._name}' not found in the ledger.")
+            raise ValueError(f"Value for '{target_var.name}' not found in the ledger.")
             
         # For scalar models, which are common in many contexts, returning a single
         # float is more convenient for the user.

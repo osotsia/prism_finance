@@ -55,7 +55,7 @@ def run_simple_sweep_model():
         cash_flow_for_sweep = net_income
         
         # --- 4. Store Handles for Reporting ---
-        net_income._name = "Net Income"
+        net_income.name = "Net Income" 
         vars_to_report['EBITDA'] = ebitda
         vars_to_report['Interest Expense'] = interest_expense
         vars_to_report['Net Income'] = net_income

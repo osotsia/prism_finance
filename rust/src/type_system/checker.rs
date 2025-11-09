@@ -85,7 +85,7 @@ impl<'a> TypeChecker<'a> {
                     unit,
                 }
             }
-            Node::SolverVariable { meta } => meta.clone(),
+            Node::SolverVariable { meta, .. } => meta.clone(), 
         };
 
         // --- PHASE 2: VERIFICATION ---

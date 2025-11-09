@@ -62,7 +62,12 @@ pub enum Node {
         meta: NodeMetadata,
     },
     /// A placeholder for a variable whose value is determined by the solver.
-    SolverVariable { meta: NodeMetadata },
+    SolverVariable { 
+        meta: NodeMetadata,
+        /// If true, this variable is defined by a temporal recurrence (e.g., X[t] = f(X[t-1])).
+        /// If false, it's part of a simultaneous system of equations within a time step.
+        is_temporal_dependency: bool,
+    },
 }
 
 impl Node {
@@ -75,7 +80,7 @@ impl Node {
         match self {
             Node::Constant { meta, .. } => meta,
             Node::Formula { meta, .. } => meta,
-            Node::SolverVariable { meta } => meta,
+            Node::SolverVariable { meta, .. } => meta,
         }
     }
 
@@ -84,7 +89,7 @@ impl Node {
         match self {
             Node::Constant { meta, .. } => meta,
             Node::Formula { meta, .. } => meta,
-            Node::SolverVariable { meta } => meta,
+            Node::SolverVariable { meta, .. } => meta,
         }
     }
 }

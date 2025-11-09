@@ -42,7 +42,7 @@ impl PyLedger {
 #[derive(Debug, Clone, Default)]
 pub struct PyComputationGraph {
     graph: ComputationGraph,
-    constraints: Vec<NodeId>,
+    constraints: Vec<(NodeId, String)>, // (residual_id, constraint_name)
 }
 
 // Private helper function, moved outside of the `#[pymethods]` block.
@@ -75,6 +75,16 @@ impl PyComputationGraph {
         Ok(node_id.index())
     }
 
+    pub fn set_node_name(&mut self, node_id: usize, new_name: String) -> PyResult<()> {
+        let node_idx = NodeId::new(node_id);
+        if let Some(node) = self.graph.graph.node_weight_mut(node_idx) {
+            node.meta_mut().name = new_name;
+            Ok(())
+        } else {
+            Err(PyValueError::new_err(format!("Node with id {} not found", node_id)))
+        }
+    }
+    
     pub fn update_constant_node(&mut self, node_id: usize, new_value: Vec<f64>) -> PyResult<()> {
         self.graph
             .update_constant(NodeId::new(node_id), new_value)
@@ -125,13 +135,34 @@ impl PyComputationGraph {
 
     pub fn add_solver_variable(&mut self, name: String) -> usize {
         let meta = NodeMetadata { name, ..Default::default() };
-        let node = Node::SolverVariable { meta };
+        let node = Node::SolverVariable { meta, is_temporal_dependency: false };
         self.graph.graph.add_node(node).index()
     }
 
     pub fn must_equal(&mut self, lhs_id: usize, rhs_id: usize, name: String) {
         let lhs_node_id = NodeId::new(lhs_id);
         let rhs_node_id = NodeId::new(rhs_id);
+        
+        // --- Infer if this is a temporal dependency ---
+        let mut is_temporal = false;
+        if let Some(Node::Formula { op: Operation::PreviousValue {..}, parents, .. }) = self.graph.get_node(rhs_node_id) {
+            // A constraint like `X.must_equal(X.prev(...))` defines a temporal dependency.
+            // The first parent of a .prev() node is the main series.
+            if let Some(main_parent_id) = parents.get(0) {
+                if *main_parent_id == lhs_node_id {
+                    is_temporal = true;
+                }
+            }
+        }
+        
+        // If it is, update the solver variable node.
+        if is_temporal {
+            if let Some(Node::SolverVariable { is_temporal_dependency, ..}) = self.graph.graph.node_weight_mut(lhs_node_id) {
+                *is_temporal_dependency = true;
+            }
+        }
+
+        // --- Create the residual node for the solver ---
         let residual_node = Node::Formula {
             op: Operation::Subtract,
             parents: vec![lhs_node_id, rhs_node_id],
@@ -140,7 +171,7 @@ impl PyComputationGraph {
         let residual_id = self.graph.graph.add_node(residual_node);
         self.graph.add_dependency(lhs_node_id, residual_id, Edge::Arithmetic);
         self.graph.add_dependency(rhs_node_id, residual_id, Edge::Arithmetic);
-        self.constraints.push(residual_id);
+        self.constraints.push((residual_id, name));
     }
 
     #[pyo3(name = "compute")]
@@ -160,7 +191,7 @@ impl PyComputationGraph {
     pub fn py_solve(&self) -> PyResult<PyLedger> {
         let engine = ComputationEngine::new(&self.graph);
         let solver_vars: Vec<NodeId> = self.graph.graph.node_indices().filter(|&id| matches!(self.graph.get_node(id), Some(Node::SolverVariable { .. }))).collect();
-        let residual_nodes = self.constraints.clone();
+        let residual_nodes: Vec<NodeId> = self.constraints.iter().map(|(id, _)| *id).collect();
 
         // If no solver variables, just do a full computation.
         if solver_vars.is_empty() {
@@ -214,7 +245,7 @@ impl PyComputationGraph {
     }
 
     pub fn trace_node(&self, node_id: usize, ledger: &PyLedger) -> PyResult<String> {
-        let trace_str = trace::format_trace(&self.graph, &ledger.ledger, NodeId::new(node_id));
+        let trace_str = trace::format_trace(&self.graph, &ledger.ledger, NodeId::new(node_id), &self.constraints);
         Ok(trace_str)
     }
 

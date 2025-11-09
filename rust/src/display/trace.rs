@@ -9,17 +9,25 @@ use std::fmt::Write;
 struct Tracer<'a> {
     graph: &'a ComputationGraph,
     ledger: &'a Ledger,
+    constraints: &'a [(NodeId, String)],
     visited: HashMap<NodeId, usize>,
     output: String,
+    solver_log_printed: bool,
 }
 
 impl<'a> Tracer<'a> {
-    fn new(graph: &'a ComputationGraph, ledger: &'a Ledger) -> Self {
+    fn new(
+        graph: &'a ComputationGraph, 
+        ledger: &'a Ledger, 
+        constraints: &'a [(NodeId, String)]
+    ) -> Self {
         Self {
             graph,
             ledger,
+            constraints,
             visited: HashMap::new(),
             output: String::new(),
+            solver_log_printed: false,
         }
     }
 
@@ -53,7 +61,6 @@ impl<'a> Tracer<'a> {
             Node::Constant { meta: _ } => {
                 let initial_val_str = Self::format_value(self.graph.get_constant_value(node_id).unwrap());
                 let _ = writeln!(self.output, "{} -> Var({})", value_str, initial_val_str);
-                // In the future, metadata could be printed here
             }
             Node::Formula { op, parents, .. } => {
                 let op_symbol = match op {
@@ -93,38 +100,53 @@ impl<'a> Tracer<'a> {
                     self.trace_recursive(*parent_id, level + 1, &child_prefix, is_child_last);
                 }
             }
-            Node::SolverVariable { .. } => {
-                let _ = writeln!(self.output, "{} [SOLVED VALUE]", value_str);
+            Node::SolverVariable { is_temporal_dependency, .. } => {
+                let label = if *is_temporal_dependency {
+                    "[SOLVED VIA TEMPORAL RECURSION]"
+                } else {
+                    "[SOLVED VIA SIMULTANEOUS EQUATION]"
+                };
+                let _ = writeln!(self.output, "{} {}", value_str, label);
+                
                 let new_prefix_stem = format!("{}  ", prefix.replace("`--", "|--").replace(" ", " "));
                 let _ = writeln!(self.output, "{}|", new_prefix_stem);
-                let _ = writeln!(self.output, "{}`-- Determined by Internal IPOPT Solver", new_prefix_stem);
+                let _ = writeln!(self.output, "{}`-- Determined by solving constraints:", new_prefix_stem);
 
-                if let Some(trace) = &self.ledger.solver_trace {
-                    let log_prefix = format!("{}   | ", new_prefix_stem);
-                    if !trace.is_empty() {
-                        let _ = writeln!(self.output, "{}{}", log_prefix, "--- IPOPT Convergence ---");
-                        let _ = writeln!(self.output, "{}{: >4} {: >11} {: >11} {: >11}", log_prefix, "iter", "obj_val", "inf_pr", "inf_du");
-                        
-                        let max_lines = 15;
-                        for iter in trace.iter().take(max_lines) {
-                            let _ = writeln!(
-                                self.output,
-                                "{}{: >4} {: >11.4e} {: >11.4e} {: >11.4e}",
-                                log_prefix, iter.iter_count, iter.obj_value, iter.inf_pr, iter.inf_du
-                            );
-                        }
-                        if trace.len() > max_lines {
-                           let _ = writeln!(self.output, "{}[... trace truncated ...]", log_prefix);
+                let relevant_constraints: Vec<_> = self.constraints.iter().filter(|(residual_id, _)| {
+                    self.graph.upstream_from(&[*residual_id]).contains(&node_id)
+                }).collect();
+
+                for (idx, (_, constraint_name)) in relevant_constraints.iter().enumerate() {
+                    let log_prefix = format!("{}   |", new_prefix_stem);
+                    let constraint_prefix = if idx == relevant_constraints.len() - 1 { "|  `--" } else { "|  |--" };
+                    let _ = writeln!(self.output, "{}{} {}", log_prefix, constraint_prefix, constraint_name);
+                }
+
+                if !self.solver_log_printed {
+                    if let Some(trace) = &self.ledger.solver_trace {
+                        let log_prefix = format!("{}   | ", new_prefix_stem);
+                        if !trace.is_empty() {
+                            let _ = writeln!(self.output, "{}{}", log_prefix, "   | --- IPOPT Convergence ---");
+                            let _ = writeln!(self.output, "{}{: >9}{: >11} {: >11} {: >11}", log_prefix, "iter", "obj_val", "inf_pr", "inf_du");
+                            
+                            for iter in trace.iter() {
+                                let _ = writeln!(
+                                    self.output,
+                                    "{}{: >9}{: >11.4e} {: >11.4e} {: >11.4e}",
+                                    log_prefix, iter.iter_count, iter.obj_value, iter.inf_pr, iter.inf_du
+                                );
+                            }
                         }
                     }
+                    self.solver_log_printed = true;
                 }
             }
         }
     }
 }
 
-pub fn format_trace(graph: &ComputationGraph, ledger: &Ledger, target_id: NodeId) -> String {
-    let mut tracer = Tracer::new(graph, ledger);
+pub fn format_trace(graph: &ComputationGraph, ledger: &Ledger, target_id: NodeId, constraints: &[(NodeId, String)]) -> String {
+    let mut tracer = Tracer::new(graph, ledger, constraints);
     let node_name = graph.get_node(target_id).unwrap().meta().name.clone();
     
     let _ = writeln!(tracer.output, "AUDIT TRACE for node '{}':", node_name);
