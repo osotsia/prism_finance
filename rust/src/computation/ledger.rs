@@ -32,11 +32,22 @@ pub enum ComputationError {
     ParentCountMismatch { node_id: NodeId, node_name: String, op: String, expected: usize, actual: usize },
 }
 
+/// Holds the structured data from a single IPOPT solver iteration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolverIteration {
+    pub iter_count: i32,
+    pub obj_value: f64,
+    pub inf_pr: f64, // Primal infeasibility
+    pub inf_du: f64, // Dual infeasibility
+}
+
 /// The "bookkeeper" of the engine. It records the final value for each
 /// node once calculated.
 #[derive(Debug, Clone, Default)]
 pub struct Ledger {
     values: HashMap<NodeId, Result<Arc<Vec<f64>>, ComputationError>>,
+    /// A structured log of the solver's convergence path, if applicable.
+    pub solver_trace: Option<Vec<SolverIteration>>,
 }
 
 impl Ledger {

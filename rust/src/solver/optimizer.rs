@@ -63,9 +63,15 @@ pub fn solve(problem: PrismProblem) -> Result<Ledger, ComputationError> {
             "IPOPT failed to create problem.".to_string(),
         ));
     }
-
-    // --- 5. Set solver options ---
+    
+    // --- 5. Set solver options & Intermediate Callback ---
     unsafe {
+        // Register the intermediate callback to capture iteration data.
+        ipopt_ffi::SetIntermediateCallback(
+            ipopt_problem,
+            Some(ipopt_adapter::intermediate_callback),
+        );
+
         // Suppress verbose IPOPT banner and output.
         ipopt_ffi::AddIpoptIntOption(ipopt_problem, "print_level\0".as_ptr() as *const i8, 0);
         // Explicitly tell IPOPT to approximate the Hessian.
@@ -98,6 +104,7 @@ pub fn solve(problem: PrismProblem) -> Result<Ledger, ComputationError> {
         ipopt_ffi::FreeIpoptProblem(ipopt_problem);
     };
     let solved_problem = unsafe { Box::from_raw(user_data) };
+    let iteration_history = solved_problem.iteration_history.into_inner().unwrap();
 
     // --- 8. Process results ---
     if solve_status == ipopt_ffi::ApplicationReturnStatus::Solve_Succeeded ||
@@ -110,6 +117,7 @@ pub fn solve(problem: PrismProblem) -> Result<Ledger, ComputationError> {
             let var_values = final_x[start_idx..end_idx].to_vec();
             final_ledger.insert(*var_id, Ok(Arc::new(var_values)));
         }
+        final_ledger.solver_trace = Some(iteration_history);
         Ok(final_ledger)
     } else {
         Err(ComputationError::SolverDidNotConverge(format!(

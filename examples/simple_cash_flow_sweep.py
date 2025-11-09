@@ -115,6 +115,10 @@ def run_simple_sweep_model():
     assert abs(solved_ni_y1 - expected_ni_y1) < 1e-6, "Solver result does not match analytical solution."
     print("  - VERIFIED: Solver result is correct.")
 
+    # Demonstrate Tracing on a Key Output
+    print("\n--- Audit Trace for Net Income ---")
+    model.trace(net_income)
+
 
 if __name__ == "__main__":
     run_simple_sweep_model()

@@ -1,6 +1,8 @@
 //! Defines the structure of a solver problem.
-use crate::computation::{ComputationEngine, Ledger};
+use crate::computation::ledger::{Ledger, SolverIteration};
+use crate::computation::ComputationEngine;
 use crate::graph::{ComputationGraph, NodeId};
+use std::sync::Mutex;
 
 /// Describes the mathematical problem to be solved: a set of variables
 /// and a set of equations that must equal zero.
@@ -16,4 +18,6 @@ pub struct PrismProblem<'a> {
     pub(crate) sync_engine: ComputationEngine<'a>,
     /// A template ledger containing all pre-computed, non-solver-dependent values.
     pub(crate) base_ledger: Ledger,
+    /// A thread-safe container to store iteration history from the C callback.
+    pub(crate) iteration_history: Mutex<Vec<SolverIteration>>,
 }

@@ -10,7 +10,7 @@ use crate::display::trace;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use std::collections::HashSet;
+use std::sync::Mutex;
 
 fn to_py_err(e: ComputationError) -> PyErr {
     PyValueError::new_err(e.to_string())
@@ -193,13 +193,14 @@ impl PyComputationGraph {
         }
 
         // Set up and run the solver.
-        let problem = PrismProblem { 
+        let problem = PrismProblem {
             graph: &self.graph,
             variables: solver_vars,
             residuals: residual_nodes,
             model_len,
             sync_engine: engine,
             base_ledger,
+            iteration_history: Mutex::new(Vec::new()),
         };
 
         let mut solved_ledger = solver_optimizer::solve(problem).map_err(to_py_err)?;

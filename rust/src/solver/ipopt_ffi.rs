@@ -143,6 +143,11 @@ extern "C" {
 
     pub fn FreeIpoptProblem(ipopt_problem: IpoptProblem);
 
+    pub fn SetIntermediateCallback(
+        ipopt_problem: IpoptProblem,
+        intermediate_cb: Option<Intermediate_CB>,
+    ) -> Bool;
+
     pub fn AddIpoptStrOption(
         ipopt_problem: IpoptProblem,
         keyword: *const c_char,

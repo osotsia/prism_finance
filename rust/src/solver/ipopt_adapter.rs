@@ -4,7 +4,7 @@
 //! pointers to the IPOPT C API. These functions are thin wrappers that handle
 //! the unsafe C-to-Rust transition and then call the safe Rust logic.
 
-use crate::computation::ComputationError;
+use crate::computation::ledger::SolverIteration;
 use crate::solver::ipopt_ffi::Bool;
 use crate::solver::problem::PrismProblem;
 use libc::{c_int, c_void};
@@ -132,6 +132,7 @@ pub extern "C" fn eval_g(
 }
 
 /// Computes the Jacobian of the constraint functions.
+#[allow(non_snake_case)]
 pub extern "C" fn eval_jac_g(
     n: Index,
     x: *mut Number,
@@ -200,6 +201,7 @@ pub extern "C" fn eval_jac_g(
 /// This is required by the IPOPT C interface, even when using a quasi-Newton
 /// approximation for the Hessian. It will not be called if the approximation
 /// is enabled, but the function pointer cannot be null.
+#[allow(non_snake_case)]
 pub extern "C" fn eval_h(
     _n: Index,
     _x: *mut Number,
@@ -215,6 +217,45 @@ pub extern "C" fn eval_h(
     _user_data: *mut c_void,
 ) -> Bool {
     1 // Return 1 (true) for success
+}
+
+/// The callback executed by IPOPT at the end of each iteration.
+/// It captures the state of the solver and stores it for later display.
+#[allow(non_snake_case)]
+pub extern "C" fn intermediate_callback(
+    _alg_mod: Index,
+    iter_count: Index,
+    obj_value: Number,
+    inf_pr: Number,
+    inf_du: Number,
+    _mu: Number,
+    _d_norm: Number,
+    _regularization_size: Number,
+    _alpha_du: Number,
+    _alpha_pr: Number,
+    _ls_trials: Index,
+    user_data: *mut c_void,
+) -> Bool {
+    ipopt_callback_wrapper(|| {
+        let problem = unsafe { get_problem(user_data) };
+
+        let iteration_data = SolverIteration {
+            iter_count,
+            obj_value,
+            inf_pr,
+            inf_du,
+        };
+
+        // Lock the mutex and push the new iteration data. The lock is released
+        // automatically when `history` goes out of scope.
+        match problem.iteration_history.lock() {
+            Ok(mut history) => {
+                history.push(iteration_data);
+                Ok(true)
+            }
+            Err(e) => Err(format!("Failed to lock iteration history mutex: {}", e)),
+        }
+    })
 }
 
 /// Helper function to evaluate a single flattened constraint `g_i` at a given point `x`.

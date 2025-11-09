@@ -1,5 +1,6 @@
 //! Implements the recursive logic for generating a human-readable audit trace.
 
+use crate::computation::ledger::SolverIteration;
 use crate::computation::Ledger;
 use crate::graph::{ComputationGraph, Node, NodeId, Operation};
 use std::collections::HashMap;
@@ -33,7 +34,7 @@ impl<'a> Tracer<'a> {
         }
     }
 
-    fn trace_recursive(&mut self, node_id: NodeId, level: usize, prefix: &str, is_last: bool) {
+    fn trace_recursive(&mut self, node_id: NodeId, level: usize, prefix: &str, _is_last: bool) {
         if let Some(&first_seen_level) = self.visited.get(&node_id) {
             let _ = writeln!(self.output, "{}-> (Ref to L{})", prefix, first_seen_level);
             return;
@@ -97,6 +98,26 @@ impl<'a> Tracer<'a> {
                 let new_prefix_stem = format!("{}  ", prefix.replace("`--", "|--").replace(" ", " "));
                 let _ = writeln!(self.output, "{}|", new_prefix_stem);
                 let _ = writeln!(self.output, "{}`-- Determined by Internal IPOPT Solver", new_prefix_stem);
+
+                if let Some(trace) = &self.ledger.solver_trace {
+                    let log_prefix = format!("{}   | ", new_prefix_stem);
+                    if !trace.is_empty() {
+                        let _ = writeln!(self.output, "{}{}", log_prefix, "--- IPOPT Convergence ---");
+                        let _ = writeln!(self.output, "{}{: >4} {: >11} {: >11} {: >11}", log_prefix, "iter", "obj_val", "inf_pr", "inf_du");
+                        
+                        let max_lines = 15;
+                        for iter in trace.iter().take(max_lines) {
+                            let _ = writeln!(
+                                self.output,
+                                "{}{: >4} {: >11.4e} {: >11.4e} {: >11.4e}",
+                                log_prefix, iter.iter_count, iter.obj_value, iter.inf_pr, iter.inf_du
+                            );
+                        }
+                        if trace.len() > max_lines {
+                           let _ = writeln!(self.output, "{}[... trace truncated ...]", log_prefix);
+                        }
+                    }
+                }
             }
         }
     }
