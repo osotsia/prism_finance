@@ -1,6 +1,7 @@
 //! A synchronous, single-threaded computation engine.
 use crate::graph::{ComputationGraph, Node, NodeId, Operation};
 use crate::computation::ledger::{ComputationError, Ledger};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::cmp::max;
 
@@ -13,13 +14,58 @@ impl<'a> ComputationEngine<'a> {
         Self { graph }
     }
 
-    pub fn compute(&self, _targets: &[NodeId], ledger: &mut Ledger) -> Result<(), ComputationError> {
-        let order = self.graph.topological_order().map_err(|_| ComputationError::CycleDetected)?;
-        for &node_id in &order {
-            if ledger.get(node_id).is_some() { continue; }
+    /// Computes the values for a set of target nodes, calculating their dependencies as needed.
+    /// This implementation uses a recursive DFS to build a valid evaluation order on the fly,
+    /// respecting values that are already present in the ledger (e.g., constants, or solver variables).
+    /// This allows it to work on the cyclic graph present during solver execution.
+    pub fn compute(&self, targets: &[NodeId], ledger: &mut Ledger) -> Result<(), ComputationError> {
+        let mut eval_order = Vec::new();
+        let mut visiting = HashSet::new(); // For cycle detection
+        let mut visited = HashSet::new();  // For memoization
+
+        for &target_id in targets {
+            self.build_eval_order_dfs(target_id, ledger, &mut eval_order, &mut visiting, &mut visited)?;
+        }
+
+        for &node_id in &eval_order {
+            // The DFS ensures parents are evaluated first.
             let result = self.evaluate_node_with_parents(node_id, ledger);
             ledger.insert(node_id, result);
         }
+
+        Ok(())
+    }
+
+    /// A recursive helper function to perform a depth-first search, building a post-order
+    /// traversal of the dependency graph (which is a topological sort).
+    fn build_eval_order_dfs(
+        &self,
+        node_id: NodeId,
+        ledger: &Ledger,
+        eval_order: &mut Vec<NodeId>,
+        visiting: &mut HashSet<NodeId>,
+        visited: &mut HashSet<NodeId>,
+    ) -> Result<(), ComputationError> {
+        // If the node has been fully processed or is already in the ledger, we're done.
+        if visited.contains(&node_id) || ledger.get(node_id).is_some() {
+            return Ok(());
+        }
+        // If we encounter a node currently in the recursion stack, we've found a cycle.
+        if visiting.contains(&node_id) {
+            return Err(ComputationError::CycleDetected);
+        }
+
+        visiting.insert(node_id);
+
+        if let Some(Node::Formula { parents, .. }) = self.graph.get_node(node_id) {
+            for &parent_id in parents {
+                self.build_eval_order_dfs(parent_id, ledger, eval_order, visiting, visited)?;
+            }
+        }
+
+        visiting.remove(&node_id);
+        visited.insert(node_id);
+        eval_order.push(node_id);
         Ok(())
     }
 
@@ -47,7 +93,6 @@ impl<'a> ComputationEngine<'a> {
                 self.evaluate_formula(node_id, node, &parent_values)
             },
             Node::SolverVariable { .. } => Ok(Arc::new(vec![0.0])), // Default, will be overwritten
-            Node::Constraint { .. } => Ok(Arc::new(Vec::new())), // Structural, no value
         }
     }
 

@@ -49,7 +49,7 @@ impl<'a> Tracer<'a> {
         let _ = write!(self.output, "{}{}{}", prefix, line_prefix, node.meta().name);
 
         match node {
-            Node::Constant { meta } => {
+            Node::Constant { meta: _ } => {
                 let initial_val_str = Self::format_value(self.graph.get_constant_value(node_id).unwrap());
                 let _ = writeln!(self.output, "{} -> Var({})", value_str, initial_val_str);
                 // In the future, metadata could be printed here
@@ -97,9 +97,6 @@ impl<'a> Tracer<'a> {
                 let new_prefix_stem = format!("{}  ", prefix.replace("`--", "|--").replace(" ", " "));
                 let _ = writeln!(self.output, "{}|", new_prefix_stem);
                 let _ = writeln!(self.output, "{}`-- Determined by Internal IPOPT Solver", new_prefix_stem);
-            }
-            Node::Constraint { .. } => {
-                 let _ = writeln!(self.output, " [CONSTRAINT]");
             }
         }
     }

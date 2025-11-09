@@ -109,8 +109,7 @@ def build_and_run_lbo_model():
         ppe = model.solver_var(name="PP&E")
         total_assets = model.solver_var(name="Total Assets")
         term_loan_balance = model.solver_var(name="Term Loan Balance")
-        shareholders_equity = model.solver_var(name="Shareholders Equity")
-        total_liabilities_and_equity = model.solver_var(name="Total Liab & Equity")
+        shareholders_equity = model.solver_var(name="Shareholders Equity") 
 
         # === Link the model with `.must_equal` constraints ===
 
@@ -155,7 +154,7 @@ def build_and_run_lbo_model():
         
         # Equity is a "plug" that makes the balance sheet balance
         shareholders_equity.must_equal(total_assets - term_loan_balance)
-        total_liabilities_and_equity.must_equal(term_loan_balance + shareholders_equity)
+        total_liabilities_and_equity = term_loan_balance + shareholders_equity
 
         # --- Solve the System ---
         print(f"\nModel constructed with {model.node_count} nodes.")
@@ -199,12 +198,12 @@ def build_and_run_lbo_model():
 
     # Calculate returns
     exit_year_ebitda = model.get_value(ebitda)[-1]
-    exit_enterprise_value = exit_year_ebitda * model.get_value(exit_multiple)[0]
+    exit_enterprise_value = exit_year_ebitda * model.get_value(exit_multiple)
     final_debt = model.get_value(term_loan_balance)[-1]
     final_cash = model.get_value(cash)[-1]
     
     exit_equity_value = exit_enterprise_value - final_debt + final_cash
-    initial_equity = model.get_value(sponsor_equity)[0]
+    initial_equity = model.get_value(sponsor_equity)
     
     moic = exit_equity_value / initial_equity
     

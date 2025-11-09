@@ -42,6 +42,7 @@ impl PyLedger {
 #[derive(Debug, Clone, Default)]
 pub struct PyComputationGraph {
     graph: ComputationGraph,
+    constraints: Vec<NodeId>,
 }
 
 // Private helper function, moved outside of the `#[pymethods]` block.
@@ -128,21 +129,18 @@ impl PyComputationGraph {
         self.graph.graph.add_node(node).index()
     }
 
-    pub fn must_equal(&mut self, lhs_id: usize, rhs_id: usize, name: String) -> usize {
+    pub fn must_equal(&mut self, lhs_id: usize, rhs_id: usize, name: String) {
         let lhs_node_id = NodeId::new(lhs_id);
         let rhs_node_id = NodeId::new(rhs_id);
         let residual_node = Node::Formula {
             op: Operation::Subtract,
             parents: vec![lhs_node_id, rhs_node_id],
-            meta: NodeMetadata { name: format!("residual_for_{}", name), ..Default::default() },
+            meta: NodeMetadata { name: format!("residual_for_{}", name), ..Default::default() }
         };
         let residual_id = self.graph.graph.add_node(residual_node);
         self.graph.add_dependency(lhs_node_id, residual_id, Edge::Arithmetic);
         self.graph.add_dependency(rhs_node_id, residual_id, Edge::Arithmetic);
-        let constraint_node = Node::Constraint { lhs: lhs_node_id, rhs: rhs_node_id, meta: NodeMetadata { name, ..Default::default() } };
-        let constraint_id = self.graph.graph.add_node(constraint_node);
-        self.graph.add_dependency(residual_id, constraint_id, Edge::Arithmetic);
-        constraint_id.index()
+        self.constraints.push(residual_id);
     }
 
     #[pyo3(name = "compute")]
@@ -161,22 +159,8 @@ impl PyComputationGraph {
     #[pyo3(name = "solve")]
     pub fn py_solve(&self) -> PyResult<PyLedger> {
         let engine = ComputationEngine::new(&self.graph);
-        let mut solver_vars = Vec::new();
-        let mut residual_nodes = Vec::new();
-
-        // Identify solver variables and the residual nodes that drive the constraints.
-        for node_id in self.graph.graph.node_indices() {
-            match self.graph.get_node(node_id) {
-                Some(Node::SolverVariable { .. }) => solver_vars.push(node_id),
-                Some(Node::Constraint { .. }) => {
-                    // The residual is the direct parent of the constraint node.
-                    if let Some(parent_id) = self.graph.get_first_parent(node_id) {
-                        residual_nodes.push(parent_id);
-                    }
-                },
-                _ => {}
-            }
-        }
+        let solver_vars: Vec<NodeId> = self.graph.graph.node_indices().filter(|&id| matches!(self.graph.get_node(id), Some(Node::SolverVariable { .. }))).collect();
+        let residual_nodes = self.constraints.clone();
 
         // If no solver variables, just do a full computation.
         if solver_vars.is_empty() {

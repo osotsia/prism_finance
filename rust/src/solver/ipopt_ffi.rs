@@ -10,6 +10,7 @@ use libc::{c_char, c_int, c_void};
 
 pub type Index = c_int;
 pub type Number = f64;
+pub type Bool = c_int; // IPOPT's C interface uses 'int' as its boolean type.
 
 /// A pointer to the opaque IPOPT problem structure.
 pub type IpoptProblem = *mut c_void;
@@ -22,54 +23,54 @@ pub const IPOPT_POSINF: Number = 1.0e19;
 pub type Eval_F_CB = extern "C" fn(
     n: Index,
     x: *mut Number,
-    new_x: bool,
+    new_x: Bool,
     obj_value: *mut Number,
     user_data: *mut c_void,
-) -> bool;
+) -> Bool;
 
 pub type Eval_G_CB = extern "C" fn(
     n: Index,
     x: *mut Number,
-    new_x: bool,
+    new_x: Bool,
     m: Index,
     g: *mut Number,
     user_data: *mut c_void,
-) -> bool;
+) -> Bool;
 
 pub type Eval_Grad_F_CB = extern "C" fn(
     n: Index,
     x: *mut Number,
-    new_x: bool,
+    new_x: Bool,
     grad_f: *mut Number,
     user_data: *mut c_void,
-) -> bool;
+) -> Bool;
 
 pub type Eval_Jac_G_CB = extern "C" fn(
     n: Index,
     x: *mut Number,
-    new_x: bool,
+    new_x: Bool,
     m: Index,
     nele_jac: Index,
     iRow: *mut Index,
     jCol: *mut Index,
     values: *mut Number,
     user_data: *mut c_void,
-) -> bool;
+) -> Bool;
 
 pub type Eval_H_CB = extern "C" fn(
     n: Index,
     x: *mut Number,
-    new_x: bool,
+    new_x: Bool,
     obj_factor: Number,
     m: Index,
     lambda: *mut Number,
-    new_lambda: bool,
+    new_lambda: Bool,
     nele_hess: Index,
     iRow: *mut Index,
     jCol: *mut Index,
     values: *mut Number,
     user_data: *mut c_void,
-) -> bool;
+) -> Bool;
 
 pub type Intermediate_CB = extern "C" fn(
     alg_mod: Index,
@@ -84,7 +85,7 @@ pub type Intermediate_CB = extern "C" fn(
     alpha_pr: Number,
     ls_trials: Index,
     user_data: *mut c_void,
-) -> bool;
+) -> Bool;
 
 // --- Enum for return status ---
 #[repr(C)]
@@ -146,11 +147,11 @@ extern "C" {
         ipopt_problem: IpoptProblem,
         keyword: *const c_char,
         val: *const c_char,
-    ) -> bool;
+    ) -> Bool;
     pub fn AddIpoptNumOption(ipopt_problem: IpoptProblem, keyword: *const c_char, val: Number)
-        -> bool;
+        -> Bool;
     pub fn AddIpoptIntOption(ipopt_problem: IpoptProblem, keyword: *const c_char, val: c_int)
-        -> bool;
+        -> Bool;
 
     pub fn IpoptSolve(
         ipopt_problem: IpoptProblem,

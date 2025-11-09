@@ -63,14 +63,6 @@ pub enum Node {
     },
     /// A placeholder for a variable whose value is determined by the solver.
     SolverVariable { meta: NodeMetadata },
-    /// A node representing a constraint `LHS - RHS = 0`. This is a structural
-    /// node used to define the solver's objective function. The actual calculation
-    /// of the residual is handled by a separate `Formula` node.
-    Constraint {
-        lhs: NodeId,
-        rhs: NodeId,
-        meta: NodeMetadata,
-    },
 }
 
 impl Node {
@@ -84,7 +76,6 @@ impl Node {
             Node::Constant { meta, .. } => meta,
             Node::Formula { meta, .. } => meta,
             Node::SolverVariable { meta } => meta,
-            Node::Constraint { meta, .. } => meta,
         }
     }
 
@@ -94,7 +85,6 @@ impl Node {
             Node::Constant { meta, .. } => meta,
             Node::Formula { meta, .. } => meta,
             Node::SolverVariable { meta } => meta,
-            Node::Constraint { meta, .. } => meta,
         }
     }
 }

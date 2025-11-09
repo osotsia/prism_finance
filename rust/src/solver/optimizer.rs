@@ -4,6 +4,7 @@ use crate::computation::{ComputationError, Ledger};
 use crate::solver::ipopt_adapter;
 use crate::solver::ipopt_ffi;
 use crate::solver::problem::PrismProblem;
+
 use libc::c_int;
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -15,7 +16,6 @@ pub fn solve(problem: PrismProblem) -> Result<Ledger, ComputationError> {
     let num_constraints = problem.residuals.len() * model_len;
 
     if num_vars == 0 {
-        // Nothing to solve, return the pre-computed ledger.
         return Ok(problem.base_ledger);
     }
     if num_constraints == 0 {
@@ -27,7 +27,6 @@ pub fn solve(problem: PrismProblem) -> Result<Ledger, ComputationError> {
     // --- 1. Define bounds ---
     let mut x_l: Vec<ipopt_ffi::Number> = vec![ipopt_ffi::IPOPT_NEGINF; num_vars];
     let mut x_u: Vec<ipopt_ffi::Number> = vec![ipopt_ffi::IPOPT_POSINF; num_vars];
-    // All constraints are equality constraints, so their lower and upper bounds are 0.
     let mut g_l: Vec<ipopt_ffi::Number> = vec![0.0; num_constraints];
     let mut g_u: Vec<ipopt_ffi::Number> = vec![0.0; num_constraints];
 
@@ -35,8 +34,6 @@ pub fn solve(problem: PrismProblem) -> Result<Ledger, ComputationError> {
     let mut x_init: Vec<ipopt_ffi::Number> = vec![0.0; num_vars];
 
     // --- 3. Box user data to pass to callbacks ---
-    // The `PrismProblem` contains all the context our callbacks need.
-    // We put it on the heap and pass a raw pointer to IPOPT.
     let user_data = Box::into_raw(Box::new(problem));
 
     // --- 4. Create the IPOPT problem ---
@@ -55,58 +52,57 @@ pub fn solve(problem: PrismProblem) -> Result<Ledger, ComputationError> {
             Some(ipopt_adapter::eval_g),
             Some(ipopt_adapter::eval_grad_f),
             Some(ipopt_adapter::eval_jac_g),
-            None, // No Hessian evaluation needed
+            Some(ipopt_adapter::eval_h), // Pass the dummy Hessian callback
             user_data as *mut c_void,
         )
     };
 
     if ipopt_problem.is_null() {
-        // Must reclaim the Box if problem creation fails.
-        let _ = unsafe { Box::from_raw(user_data) };
+        let _ = unsafe { Box::from_raw(user_data) }; // Reclaim memory
         return Err(ComputationError::SolverConfiguration(
             "IPOPT failed to create problem.".to_string(),
         ));
     }
 
-    // --- Set solver options (optional) ---
+    // --- 5. Set solver options ---
     unsafe {
         // Suppress verbose IPOPT banner and output.
         ipopt_ffi::AddIpoptIntOption(ipopt_problem, "print_level\0".as_ptr() as *const i8, 0);
+        // Explicitly tell IPOPT to approximate the Hessian.
+        ipopt_ffi::AddIpoptStrOption(
+            ipopt_problem,
+            "hessian_approximation\0".as_ptr() as *const i8,
+            "limited-memory\0".as_ptr() as *const i8,
+        );
         ipopt_ffi::AddIpoptNumOption(ipopt_problem, "tol\0".as_ptr() as *const i8, 1e-9);
     };
 
-    // --- 5. Solve the problem ---
-    let mut solve_status: ipopt_ffi::ApplicationReturnStatus;
-    let mut final_obj_val: ipopt_ffi::Number = 0.0;
-    
-    // IPOPT writes its solution back into the initial guess vector `x_init`.
-    // We will later copy this into `final_x`.
-    
-    unsafe {
-        solve_status = ipopt_ffi::IpoptSolve(
+    // --- 6. Solve the problem ---
+    let solve_status = unsafe {
+        ipopt_ffi::IpoptSolve(
             ipopt_problem,
             x_init.as_mut_ptr(),
-            g_l.as_mut_ptr(), // IPOPT can write final constraint values here, but we don't need them.
-            &mut final_obj_val,
-            std::ptr::null_mut(), // Multiplier info not needed
-            std::ptr::null_mut(), // Multiplier info not needed
-            std::ptr::null_mut(), // Multiplier info not needed
+            g_l.as_mut_ptr(),
+            std::ptr::null_mut(), // obj_val not needed
+            std::ptr::null_mut(), // mult_g not needed
+            std::ptr::null_mut(), // mult_x_L not needed
+            std::ptr::null_mut(), // mult_x_U not needed
             user_data as *mut c_void,
-        );
-    }
+        )
+    };
 
-    // The solution is now in `x_init`.
     let final_x = x_init;
 
-    // --- 6. Clean up ---
+    // --- 7. Clean up ---
     unsafe {
         ipopt_ffi::FreeIpoptProblem(ipopt_problem);
     };
-    // IMPORTANT: Reclaim the Box to deallocate the PrismProblem.
     let solved_problem = unsafe { Box::from_raw(user_data) };
 
-    // --- 7. Process results ---
-    if solve_status == ipopt_ffi::ApplicationReturnStatus::Solve_Succeeded {
+    // --- 8. Process results ---
+    if solve_status == ipopt_ffi::ApplicationReturnStatus::Solve_Succeeded ||
+       solve_status == ipopt_ffi::ApplicationReturnStatus::Solved_To_Acceptable_Level
+    {
         let mut final_ledger = solved_problem.base_ledger.clone();
         for (i, var_id) in solved_problem.variables.iter().enumerate() {
             let start_idx = i * model_len;

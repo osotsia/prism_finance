@@ -5,6 +5,7 @@
 //! the unsafe C-to-Rust transition and then call the safe Rust logic.
 
 use crate::computation::ComputationError;
+use crate::solver::ipopt_ffi::Bool;
 use crate::solver::problem::PrismProblem;
 use libc::{c_int, c_void};
 use std::panic::{catch_unwind, UnwindSafe};
@@ -17,19 +18,24 @@ type Index = c_int;
 /// A wrapper function to execute a closure within a `catch_unwind` block.
 /// If a panic occurs, it prints an error and returns `false`, which signals
 /// an error to IPOPT.
-fn ipopt_callback_wrapper<F>(closure: F) -> bool
+fn ipopt_callback_wrapper<F>(closure: F) -> Bool
 where
     F: FnOnce() -> Result<bool, String> + UnwindSafe,
 {
     match catch_unwind(closure) {
-        Ok(Ok(success)) => success,
+        Ok(Ok(success)) => {
+            if success { 1 } else { 0 }
+        }
         Ok(Err(msg)) => {
-            eprintln!("IPOPT callback error: {}", msg);
-            false
+            eprintln!("\n[PRISM DEBUG] --- ERROR in IPOPT Callback ---");
+            eprintln!("[PRISM DEBUG] The following error prevented the constraints from being evaluated:");
+            eprintln!("[PRISM DEBUG] Details: {}", msg);
+            eprintln!("[PRISM DEBUG] ----------------------------------\n");
+            0 // Return 0 (false) to IPOPT on error
         }
         Err(_) => {
             eprintln!("FATAL: Panic occurred within an IPOPT callback.");
-            false
+            0 // Return 0 (false) to IPOPT on panic
         }
     }
 }
@@ -44,14 +50,14 @@ unsafe fn get_problem<'a>(user_data: *mut c_void) -> &'a mut PrismProblem<'a> {
 pub extern "C" fn eval_f(
     _n: Index,
     _x: *mut Number,
-    _new_x: bool,
+    _new_x: Bool,
     obj_value: *mut Number,
     _user_data: *mut c_void,
-) -> bool {
+) -> Bool {
     unsafe {
         *obj_value = 0.0;
     }
-    true
+    1 // Return 1 (true) for success
 }
 
 /// Computes the gradient of the objective function. Since our objective is
@@ -59,24 +65,24 @@ pub extern "C" fn eval_f(
 pub extern "C" fn eval_grad_f(
     n: Index,
     _x: *mut Number,
-    _new_x: bool,
+    _new_x: Bool,
     grad_f: *mut Number,
     _user_data: *mut c_void,
-) -> bool {
+) -> Bool {
     let grad_f_slice = unsafe { slice::from_raw_parts_mut(grad_f, n as usize) };
     grad_f_slice.fill(0.0);
-    true
+    1 // Return 1 (true) for success
 }
 
 /// Computes the values of the constraint functions (the residuals).
 pub extern "C" fn eval_g(
     n: Index,
     x: *mut Number,
-    _new_x: bool,
+    _new_x: Bool,
     m: Index,
     g: *mut Number,
     user_data: *mut c_void,
-) -> bool {
+) -> Bool {
     ipopt_callback_wrapper(|| {
         let problem = unsafe { get_problem(user_data) };
         let x_slice = unsafe { slice::from_raw_parts(x, n as usize) };
@@ -94,10 +100,11 @@ pub extern "C" fn eval_g(
         }
 
         // Compute the values of the residual nodes based on the current guess.
-        problem
-            .sync_engine
-            .compute(&problem.residuals, &mut ledger)
-            .map_err(|e| e.to_string())?;
+        let compute_result = problem.sync_engine.compute(&problem.residuals, &mut ledger);
+        if let Err(e) = compute_result {
+            // Immediately return an error if the computation engine fails.
+            return Err(format!("Computation engine failed: {}", e.to_string()));
+        }
 
         // Populate the output slice `g` by flattening the computed residual values.
         for (i, residual_id) in problem.residuals.iter().enumerate() {
@@ -119,6 +126,7 @@ pub extern "C" fn eval_g(
                 }
             }
         }
+        
         Ok(true)
     })
 }
@@ -127,20 +135,18 @@ pub extern "C" fn eval_g(
 pub extern "C" fn eval_jac_g(
     n: Index,
     x: *mut Number,
-    _new_x: bool,
+    _new_x: Bool,
     m: Index,
     nele_jac: Index,
     iRow: *mut Index,
     jCol: *mut Index,
     values: *mut Number,
     user_data: *mut c_void,
-) -> bool {
-    let n_usize = n as usize;
-    let m_usize = m as usize;
-
+) -> Bool {
     // If `values` is null, IPOPT is asking for the sparsity structure.
-    // We assume a dense Jacobian, so we provide all (row, col) pairs.
     if values.is_null() {
+        let n_usize = n as usize;
+        let m_usize = m as usize;
         let iRow_slice = unsafe { slice::from_raw_parts_mut(iRow, nele_jac as usize) };
         let jCol_slice = unsafe { slice::from_raw_parts_mut(jCol, nele_jac as usize) };
         let mut idx = 0;
@@ -151,12 +157,12 @@ pub extern "C" fn eval_jac_g(
                 idx += 1;
             }
         }
-        return true;
+        return 1; // Return 1 (true) for success
     }
 
     // Otherwise, IPOPT is asking for the Jacobian values.
-    // We compute this using central finite differences.
     ipopt_callback_wrapper(|| {
+        let n_usize = n as usize;
         let values_slice = unsafe { slice::from_raw_parts_mut(values, nele_jac as usize) };
         let x_slice = unsafe { slice::from_raw_parts(x, n_usize) };
         let mut x_mut = x_slice.to_vec();
@@ -165,7 +171,7 @@ pub extern "C" fn eval_jac_g(
 
         let mut jac_idx = 0;
         // Loop over IPOPT constraints `g_i` (rows of Jacobian)
-        for i in 0..m_usize {
+        for i in 0..(m as usize) {
             // Loop over IPOPT variables `x_j` (columns of Jacobian)
             for j in 0..n_usize {
                 let original_xj = x_mut[j];
@@ -188,6 +194,27 @@ pub extern "C" fn eval_jac_g(
         }
         Ok(true)
     })
+}
+
+/// A dummy callback for the Hessian of the Lagrangian.
+/// This is required by the IPOPT C interface, even when using a quasi-Newton
+/// approximation for the Hessian. It will not be called if the approximation
+/// is enabled, but the function pointer cannot be null.
+pub extern "C" fn eval_h(
+    _n: Index,
+    _x: *mut Number,
+    _new_x: Bool,
+    _obj_factor: Number,
+    _m: Index,
+    _lambda: *mut Number,
+    _new_lambda: Bool,
+    _nele_hess: Index,
+    _iRow: *mut Index,
+    _jCol: *mut Index,
+    _values: *mut Number,
+    _user_data: *mut c_void,
+) -> Bool {
+    1 // Return 1 (true) for success
 }
 
 /// Helper function to evaluate a single flattened constraint `g_i` at a given point `x`.
