@@ -46,11 +46,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-pip-
 
-      # FIX: Install IPOPT before attempting to build
-      - name: Install IPOPT (Linux)
+      # FIX: Install IPOPT and its own dependencies (BLAS, LAPACK)
+      - name: Install System Dependencies (Linux)
         run: |
           sudo apt-get update
-          sudo apt-get install -y coinor-libipopt-dev
+          sudo apt-get install -y coinor-libipopt-dev liblapack-dev libblas-dev
 
       - name: Run Linters
         working-directory: rust
@@ -61,7 +61,6 @@ jobs:
       - name: Install Python dependencies and build for testing
         run: |
           pip install pytest maturin
-          # The maturin build command below requires IPOPT to be installed
           maturin build --out dist
           pip install dist/*.whl
 
@@ -82,7 +81,7 @@ jobs:
     strategy:
       matrix:
         platform: [ubuntu-latest, windows-latest, macos-latest]
-        cpython-version: ["3.10", "3.11", "3.12"] # 3.13 is not yet fully supported by some dependencies
+        cpython-version: ["3.10", "3.11", "3.12"]
         exclude:
           - platform: macos-14
             cpython-version: "3.8"
@@ -90,18 +89,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # FIX: Install IPOPT for each OS in the build matrix
-      - name: Install IPOPT (Linux)
+      # FIX: Install IPOPT and its dependencies for each OS in the build matrix
+      - name: Install System Dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y coinor-libipopt-dev
+          sudo apt-get install -y coinor-libipopt-dev liblapack-dev libblas-dev
 
-      - name: Install IPOPT (macOS)
+      - name: Install System Dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install ipopt
       
-      - name: Install IPOPT (Windows)
+      - name: Install System Dependencies (Windows)
         if: runner.os == 'Windows'
         run: vcpkg install ipopt:x64-windows
 
@@ -134,7 +133,6 @@ jobs:
 
     steps:
       - name: Download all wheels from build artifacts
-        # This action has a known issue where it creates subdirectories. The pattern below fixes it.
         uses: actions/download-artifact@v4
         with:
           path: dist
