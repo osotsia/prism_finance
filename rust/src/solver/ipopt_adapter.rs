@@ -4,7 +4,8 @@
 //! pointers to the IPOPT C API. These functions are thin wrappers that handle
 //! the unsafe C-to-Rust transition and then call the safe Rust logic.
 
-use crate::computation::ledger::SolverIteration;
+use crate::computation::ledger::{ComputationError, Ledger, SolverIteration};
+use crate::graph::NodeId;
 use crate::solver::ipopt_ffi::Bool;
 use crate::solver::problem::PrismProblem;
 use libc::{c_int, c_void};
@@ -43,6 +44,31 @@ where
 /// Helper to get a mutable reference to the `PrismProblem` from `user_data`.
 unsafe fn get_problem<'a>(user_data: *mut c_void) -> &'a mut PrismProblem<'a> {
     &mut *(user_data as *mut PrismProblem)
+}
+
+/// A "Scenario Engine": The core helper that takes a potential solution `x_guess` from the
+/// solver and runs the computation graph to see what the results would be. This is the
+/// heart of the callbacks, used to evaluate both the constraints and their derivatives.
+fn evaluate_graph_at_point<'a>(
+    problem: &'a PrismProblem<'a>,
+    x_guess: &[f64],
+    targets: &[NodeId],
+) -> Result<Ledger, ComputationError> {
+    let mut ledger = problem.base_ledger.clone();
+    let model_len = problem.model_len;
+
+    // "The Unpacker": Translate the solver's flat list of numbers `x_guess` into
+    // the structured, time-series values needed by the computation engine.
+    for (i, var_id) in problem.variables.iter().enumerate() {
+        let start_idx = i * model_len;
+        let end_idx = start_idx + model_len;
+        let var_values = x_guess[start_idx..end_idx].to_vec();
+        ledger.insert(*var_id, Ok(Arc::new(var_values)));
+    }
+
+    // "The Calculator": Run the engine to compute the values of the target nodes.
+    problem.sync_engine.compute(targets, &mut ledger)?;
+    Ok(ledger)
 }
 
 /// Computes the objective function. For Prism, this is always 0, as we
@@ -87,46 +113,25 @@ pub extern "C" fn eval_g(
         let problem = unsafe { get_problem(user_data) };
         let x_slice = unsafe { slice::from_raw_parts(x, n as usize) };
         let g_slice = unsafe { slice::from_raw_parts_mut(g, m as usize) };
-        let model_len = problem.model_len;
 
-        let mut ledger = problem.base_ledger.clone();
+        // Evaluate the graph with the current guess `x` to get the constraint values.
+        let result_ledger = evaluate_graph_at_point(problem, x_slice, &problem.residuals)
+            .map_err(|e| format!("Computation engine failed: {}", e.to_string()))?;
 
-        // Set the current guess for solver variables in the ledger by un-flattening x.
-        for (i, var_id) in problem.variables.iter().enumerate() {
-            let start_idx = i * model_len;
-            let end_idx = start_idx + model_len;
-            let var_values = x_slice[start_idx..end_idx].to_vec();
-            ledger.insert(*var_id, Ok(Arc::new(var_values)));
-        }
-
-        // Compute the values of the residual nodes based on the current guess.
-        let compute_result = problem.sync_engine.compute(&problem.residuals, &mut ledger);
-        if let Err(e) = compute_result {
-            // Immediately return an error if the computation engine fails.
-            return Err(format!("Computation engine failed: {}", e.to_string()));
-        }
-
-        // Populate the output slice `g` by flattening the computed residual values.
+        // "The Packer": Flatten the structured results back into the simple list `g` that IPOPT expects.
         for (i, residual_id) in problem.residuals.iter().enumerate() {
-            match ledger.get(*residual_id) {
+            match result_ledger.get(*residual_id) {
                 Some(Ok(val_arc)) => {
-                    let start_idx = i * model_len;
-                    for t in 0..model_len {
-                        // Handle broadcasting of results if residual computed as scalar.
+                    let start_idx = i * problem.model_len;
+                    for t in 0..problem.model_len {
                         let val = *val_arc.get(t).unwrap_or_else(|| val_arc.last().unwrap_or(&0.0));
                         g_slice[start_idx + t] = val;
                     }
                 }
-                Some(Err(e)) => {
-                    return Err(format!("Upstream error computing residual {}: {}", residual_id.index(), e));
-                }
-                None => {
-                    let msg = format!("Failed to compute residual for node {}", residual_id.index());
-                    return Err(msg);
-                }
+                Some(Err(e)) => return Err(format!("Upstream error for residual {}: {}", residual_id.index(), e)),
+                None => return Err(format!("Failed to compute residual {}", residual_id.index())),
             }
         }
-        
         Ok(true)
     })
 }
@@ -151,6 +156,7 @@ pub extern "C" fn eval_jac_g(
         let iRow_slice = unsafe { slice::from_raw_parts_mut(iRow, nele_jac as usize) };
         let jCol_slice = unsafe { slice::from_raw_parts_mut(jCol, nele_jac as usize) };
         let mut idx = 0;
+        // We assume a dense Jacobian for simplicity.
         for r in 0..m_usize {
             for c in 0..n_usize {
                 iRow_slice[idx] = r as Index;
@@ -161,7 +167,7 @@ pub extern "C" fn eval_jac_g(
         return 1; // Return 1 (true) for success
     }
 
-    // Otherwise, IPOPT is asking for the Jacobian values.
+    // Otherwise, IPOPT is asking for the Jacobian values, which we approximate.
     ipopt_callback_wrapper(|| {
         let n_usize = n as usize;
         let values_slice = unsafe { slice::from_raw_parts_mut(values, nele_jac as usize) };
@@ -169,24 +175,21 @@ pub extern "C" fn eval_jac_g(
         let mut x_mut = x_slice.to_vec();
 
         let h = 1e-8; // Step size for finite difference
-
         let mut jac_idx = 0;
+
         // Loop over IPOPT constraints `g_i` (rows of Jacobian)
         for i in 0..(m as usize) {
             // Loop over IPOPT variables `x_j` (columns of Jacobian)
             for j in 0..n_usize {
                 let original_xj = x_mut[j];
 
-                // Compute g_i(x + h*e_j)
                 x_mut[j] = original_xj + h;
-                let g_plus = get_g_i(i, &x_mut, user_data)?;
+                let g_plus = get_single_constraint_value(i, &x_mut, user_data)?;
 
-                // Compute g_i(x - h*e_j)
                 x_mut[j] = original_xj - h;
-                let g_minus = get_g_i(i, &x_mut, user_data)?;
-
-                // Restore original value
-                x_mut[j] = original_xj;
+                let g_minus = get_single_constraint_value(i, &x_mut, user_data)?;
+                
+                x_mut[j] = original_xj; // Restore original value
 
                 // Central difference formula for d(g_i)/d(x_j)
                 values_slice[jac_idx] = (g_plus - g_minus) / (2.0 * h);
@@ -220,7 +223,6 @@ pub extern "C" fn eval_h(
 }
 
 /// The callback executed by IPOPT at the end of each iteration.
-/// It captures the state of the solver and stores it for later display.
 #[allow(non_snake_case)]
 pub extern "C" fn intermediate_callback(
     _alg_mod: Index,
@@ -238,16 +240,7 @@ pub extern "C" fn intermediate_callback(
 ) -> Bool {
     ipopt_callback_wrapper(|| {
         let problem = unsafe { get_problem(user_data) };
-
-        let iteration_data = SolverIteration {
-            iter_count,
-            obj_value,
-            inf_pr,
-            inf_du,
-        };
-
-        // Lock the mutex and push the new iteration data. The lock is released
-        // automatically when `history` goes out of scope.
+        let iteration_data = SolverIteration { iter_count, obj_value, inf_pr, inf_du };
         match problem.iteration_history.lock() {
             Ok(mut history) => {
                 history.push(iteration_data);
@@ -258,9 +251,8 @@ pub extern "C" fn intermediate_callback(
     })
 }
 
-/// Helper function to evaluate a single flattened constraint `g_i` at a given point `x`.
-/// This is used by the finite differencing logic in `eval_jac_g`.
-fn get_g_i(ipopt_con_idx: usize, x: &[f64], user_data: *mut c_void) -> Result<f64, String> {
+/// Helper to evaluate a single constraint `g_i` at a point `x`, for finite differencing.
+fn get_single_constraint_value(ipopt_con_idx: usize, x: &[f64], user_data: *mut c_void) -> Result<f64, String> {
     let problem = unsafe { get_problem(user_data) };
     let model_len = problem.model_len;
 
@@ -269,23 +261,10 @@ fn get_g_i(ipopt_con_idx: usize, x: &[f64], user_data: *mut c_void) -> Result<f6
     let time_step = ipopt_con_idx % model_len;
     let residual_node_id = problem.residuals[residual_list_idx];
 
-    let mut ledger = problem.base_ledger.clone();
-
-    // Un-flatten the IPOPT variable vector `x` into the ledger
-    for (k, var_id) in problem.variables.iter().enumerate() {
-        let start_idx = k * model_len;
-        let end_idx = start_idx + model_len;
-        let var_values = x[start_idx..end_idx].to_vec();
-        ledger.insert(*var_id, Ok(Arc::new(var_values)));
-    }
-
-    // We only need this one residual, but the engine will compute its dependencies.
-    problem
-        .sync_engine
-        .compute(&[residual_node_id], &mut ledger)
+    let result_ledger = evaluate_graph_at_point(problem, x, &[residual_node_id])
         .map_err(|e| e.to_string())?;
 
-    match ledger.get(residual_node_id) {
+    match result_ledger.get(residual_node_id) {
         Some(Ok(val_arc)) => {
             // Get the value at the specific time step, handling broadcasting.
             let val = *val_arc
