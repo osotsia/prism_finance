@@ -53,12 +53,12 @@ def demonstrate_solver():
         # Constraint 1: total_funds must equal (project_cost + financing_fee)
         rhs1 = project_cost + financing_fee
         total_funds.must_equal(rhs1)
-        print(f"Declared constraint: {total_funds._name} == {rhs1._name}")
+        print(f"Declared constraint: {total_funds.name} == {rhs1.name}")
 
         # Constraint 2: financing_fee must equal (total_funds * fee_rate)
         rhs2 = total_funds * fee_rate
         financing_fee.must_equal(rhs2)
-        print(f"Declared constraint: {financing_fee._name} == {rhs2._name}")
+        print(f"Declared constraint: {financing_fee.name} == {rhs2.name}")
 
         # --- 4. Execute the Solver ---
         print("\nSolving the system...")
@@ -66,9 +66,9 @@ def demonstrate_solver():
         print("Solver finished.")
 
     # --- 5. Retrieve and Verify Results ---
-    # We use `model.compute(var)` to get the final values from the internal ledger.
-    solved_funds = model.compute(total_funds)
-    solved_fee = model.compute(financing_fee)
+    # We use `model.get_value(var)` to get the final values from the internal ledger.
+    solved_funds = model.get_value(total_funds)
+    solved_fee = model.get_value(financing_fee)
 
     print(f"\n--- Solved Values ---")
     print(f"  - Total Funds Raised: {solved_funds:,.2f}")
@@ -89,6 +89,9 @@ def demonstrate_solver():
     
     print("\nResults match the analytical solution. The model is correct.")
 
+    # --- Demonstrate Tracing on a Key Output ---
+    print("\n--- Audit Trace for Financing fee ---")
+    model.trace(financing_fee)
 
 if __name__ == "__main__":
     demonstrate_solver()
