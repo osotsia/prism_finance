@@ -2,7 +2,7 @@
 Defines the user-facing graph construction API (Canvas and Var).
 """
 import warnings
-from typing import List, Union, overload
+from typing import List, Union, overload, Any
 from contextvars import ContextVar
 from . import _core  # Import the compiled Rust extension module
 
@@ -23,6 +23,13 @@ def get_active_canvas() -> 'Canvas':
 class Var:
     """Represents a variable (a node) in the financial model."""
 
+    @staticmethod
+    def _normalize_value(value: Any) -> List[float]:
+        """A private helper to consistently coerce input values into a list of floats."""
+        if isinstance(value, (int, float)):
+            return [float(value)]
+        return [float(v) for v in value]
+
     def __init__(
         self,
         value: Union[int, float, List[float]],
@@ -36,11 +43,11 @@ class Var:
 
         self._canvas = get_active_canvas()
         self._py_name = name
-
-        val_list = [float(value)] if isinstance(value, (int, float)) else [float(v) for v in value]
+        
+        normalized_value = Var._normalize_value(value)
         
         self._node_id = self._canvas._graph.add_constant_node(
-            value=val_list,
+            value=normalized_value,
             name=name,
             unit=unit,
             temporal_type=temporal_type
@@ -78,9 +85,9 @@ class Var:
         Raises:
             TypeError: If called on a Var that is not a constant input (e.g., a formula).
         """
-        val_list = [float(value)] if isinstance(value, (int, float)) else [float(v) for v in value]
+        normalized_value = Var._normalize_value(value)
         try:
-            self._canvas._graph.update_constant_node(self._node_id, val_list)
+            self._canvas._graph.update_constant_node(self._node_id, normalized_value)
         except ValueError as e:
             # Re-raise with a more user-friendly message
             raise TypeError(f"Cannot set value for Var '{self.name}'. It may not be a constant input Var.") from e

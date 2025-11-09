@@ -10,6 +10,7 @@ use crate::display::trace;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 fn to_py_err(e: ComputationError) -> PyErr {
@@ -45,8 +46,46 @@ pub struct PyComputationGraph {
     constraints: Vec<(NodeId, String)>, // (residual_id, constraint_name)
 }
 
-// Private helper function, moved outside of the `#[pymethods]` block.
+// Private helper functions, moved outside of the `#[pymethods]` block.
 impl PyComputationGraph {
+    /// The "Surveyor": Analyzes the graph to find all inputs required for the solver.
+    fn prepare_solver_inputs(&self) -> (Vec<NodeId>, Vec<NodeId>, HashSet<NodeId>, usize) {
+        let solver_vars: Vec<NodeId> = self.graph.graph.node_indices()
+            .filter(|&id| matches!(self.graph.get_node(id), Some(Node::SolverVariable { .. })))
+            .collect();
+
+        let residual_nodes: Vec<NodeId> = self.constraints.iter().map(|(id, _)| *id).collect();
+        let solver_dependent_nodes = self.graph.downstream_from(&solver_vars);
+
+        // The "Timekeeper": Determines the model's time-series length by inspecting the
+        // max length of any constant that is an input to the solver system.
+        let residual_predecessors = self.graph.upstream_from(&residual_nodes);
+        let mut model_len = 1;
+        for node_id in residual_predecessors {
+            if let Some(Node::Constant { .. }) = self.graph.get_node(node_id) {
+                if let Some(val) = self.graph.get_constant_value(node_id) {
+                    model_len = model_len.max(val.len());
+                }
+            }
+        }
+        (solver_vars, residual_nodes, solver_dependent_nodes, model_len)
+    }
+
+    /// The "Accountant": Pre-calculates the opening balances for the solver by computing
+    /// all nodes that are independent of the circular system.
+    fn precompute_independent_nodes(
+        &self,
+        engine: &ComputationEngine,
+        solver_dependent_nodes: &HashSet<NodeId>,
+    ) -> Result<Ledger, PyErr> {
+        let mut base_ledger = Ledger::new();
+        let precompute_targets: Vec<NodeId> = self.graph.graph.node_indices()
+            .filter(|id| !solver_dependent_nodes.contains(id))
+            .collect();
+        engine.compute(&precompute_targets, &mut base_ledger).map_err(to_py_err)?;
+        Ok(base_ledger)
+    }
+
     fn parse_temporal_type(temporal_type: Option<String>) -> PyResult<Option<TemporalType>> {
         match temporal_type.as_deref() {
             Some("Stock") => Ok(Some(TemporalType::Stock)),
@@ -187,13 +226,13 @@ impl PyComputationGraph {
         Ok(())
     }
 
+    /// The "Orchestrator": Manages the sequence of operations for solving the graph.
     #[pyo3(name = "solve")]
     pub fn py_solve(&self) -> PyResult<PyLedger> {
         let engine = ComputationEngine::new(&self.graph);
-        let solver_vars: Vec<NodeId> = self.graph.graph.node_indices().filter(|&id| matches!(self.graph.get_node(id), Some(Node::SolverVariable { .. }))).collect();
-        let residual_nodes: Vec<NodeId> = self.constraints.iter().map(|(id, _)| *id).collect();
+        let (solver_vars, residual_nodes, solver_dependent_nodes, model_len) = self.prepare_solver_inputs();
 
-        // If no solver variables, just do a full computation.
+        // If no solver variables, the model is a simple DAG. Just do a full computation.
         if solver_vars.is_empty() {
             let mut ledger = Ledger::new();
             let all_nodes: Vec<NodeId> = self.graph.graph.node_indices().collect();
@@ -205,25 +244,10 @@ impl PyComputationGraph {
             return Err(PyRuntimeError::new_err("Solver variables exist but no constraints were defined."));
         }
 
-        // Pre-compute all nodes that do NOT depend on the solver variables.
-        let mut base_ledger = Ledger::new();
-        let solver_dependent_nodes = self.graph.downstream_from(&solver_vars);
-        let precompute_targets: Vec<NodeId> = self.graph.graph.node_indices().filter(|id| !solver_dependent_nodes.contains(id)).collect();
-        engine.compute(&precompute_targets, &mut base_ledger).map_err(to_py_err)?;
+        // --- Stage 1: Pre-computation ---
+        let base_ledger = self.precompute_independent_nodes(&engine, &solver_dependent_nodes)?;
 
-        // Determine the model's time-series length by inspecting the max length
-        // of any constant that is an input to the solver system.
-        let residual_predecessors = self.graph.upstream_from(&residual_nodes);
-        let mut model_len = 1;
-        for node_id in residual_predecessors {
-            if let Some(Node::Constant { .. }) = self.graph.get_node(node_id) {
-                if let Some(val) = self.graph.get_constant_value(node_id) {
-                    model_len = model_len.max(val.len());
-                }
-            }
-        }
-
-        // Set up and run the solver.
+        // --- Stage 2: Solving ---
         let problem = PrismProblem {
             graph: &self.graph,
             variables: solver_vars,
@@ -233,10 +257,10 @@ impl PyComputationGraph {
             base_ledger,
             iteration_history: Mutex::new(Vec::new()),
         };
-
         let mut solved_ledger = solver_optimizer::solve(problem).map_err(to_py_err)?;
 
-        // Post-compute any remaining nodes that depend on the solved values.
+        // --- Stage 3: Post-computation ---
+        // The "Finisher": Calculates any remaining nodes that depend on the solved values.
         let post_engine = ComputationEngine::new(&self.graph);
         let all_nodes: Vec<NodeId> = self.graph.graph.node_indices().collect();
         post_engine.compute(&all_nodes, &mut solved_ledger).map_err(to_py_err)?;
