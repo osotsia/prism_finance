@@ -16,7 +16,7 @@ mod display;
 /// A simple function to confirm the Rust core is callable from Python.
 #[pyfunction]
 fn rust_core_version() -> &'static str {
-    "0.1.0-alpha"
+    "0.2.0-alpha.1"
 }
 
 // --- Module Definition ---
