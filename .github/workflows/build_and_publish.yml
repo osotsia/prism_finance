@@ -1,8 +1,6 @@
 # .github/workflows/build_and_publish.yml
 name: Build and Publish Prism
 
-# This workflow is triggered on pushes and pull requests to the main branch,
-# and most importantly, when a new Release is published in GitHub.
 on:
   push:
     branches: [ main ]
@@ -14,52 +12,27 @@ on:
 
 jobs:
   # ====================================================================
-  # Job 1: Run Linters and Tests on a single platform for quick feedback
+  # Job 1: Quick Test & Lint on a single platform
   # ====================================================================
   test_and_lint:
     name: Test & Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            ~/.cache/pip
-            rust/target/
-          key: ${{ runner.os }}-cargo-pip-${{ hashFiles('**/Cargo.lock', '**/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-pip-
-
-      - name: Install System Dependencies (Linux)
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y coinor-libipopt-dev liblapack-dev libblas-dev
 
-      - name: Run Linters
-        working-directory: rust
-        run: |
-          # cargo fmt -- --check
-          # cargo clippy -- -D warnings
-
       - name: Install Python dependencies and build for testing
         run: |
           pip install pytest maturin
+          # Use a debug build for faster testing
           maturin build --out dist
           pip install dist/*.whl
 
@@ -74,17 +47,25 @@ jobs:
   # Job 2: Build binary wheels for all target platforms
   # ====================================================================
   build_wheels:
-    name: Build wheels on ${{ matrix.platform }} for Python ${{ matrix.cpython-version }}
+    name: Build wheels on ${{ matrix.os }} for Python ${{ matrix.python-version }}
     needs: test_and_lint
-    runs-on: ${{ matrix.platform }}
+    # Pin the OS version for reproducibility. macos-14 is ARM64.
+    runs-on: ${{ matrix.os }}
     strategy:
-      # FIX: Remove windows-latest from the build matrix as IPOPT is not available.
+      fail-fast: false
       matrix:
-        platform: [macos-latest]
-        cpython-version: ["3.10", "3.11", "3.12"]
+        os: [macos-14, ubuntu-latest]
+        # Use full python versions
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
+
+      # CRITICAL FIX: Set up the correct Python version explicitly.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
 
       - name: Install System Dependencies (Linux)
         if: runner.os == 'Linux'
@@ -96,25 +77,62 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ipopt
 
+      # Build the wheel using maturin. The action will now use the Python
+      # version we just set up, not its own internal logic.
       - name: Build binary wheel
         uses: PyO3/maturin-action@v1
         with:
-          cpython-version: ${{ matrix.cpython-version }}
+          # Remove `cpython-version` as we now control the environment.
           args: --release --out dist
+          # This enables building manylinux wheels on the ubuntu-latest runner.
           manylinux: auto
+
+      # BEST PRACTICE: Install the wheel you just built and test it.
+      - name: Install dependencies for testing the wheel
+        run: pip install pytest
+
+      - name: Install and test the wheel
+        shell: bash
+        run: |
+          pip install dist/*.whl
+          # Run tests to ensure the built wheel is functional
+          pytest
 
       - name: Upload wheels as a build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.platform }}-${{ matrix.cpython-version }}
+          name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
           path: dist
 
   # ====================================================================
-  # Job 3: Publish the wheels to PyPI (only on a new release)
+  # Job 3: Build the source distribution (sdist)
+  # ====================================================================
+  build_sdist:
+    name: Build source distribution
+    needs: test_and_lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - name: Upload sdist as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+  # ====================================================================
+  # Job 4: Publish to PyPI (only on a new release)
   # ====================================================================
   publish_to_pypi:
     name: Publish to PyPI
-    needs: build_wheels
+    # It now needs both the wheels and the sdist.
+    needs: [build_wheels, build_sdist]
     if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
     environment:
@@ -124,12 +142,27 @@ jobs:
       id-token: write
 
     steps:
-      - name: Download all wheels from build artifacts
+      # Download all wheel artifacts
+      - name: Download wheel artifacts
         uses: actions/download-artifact@v4
         with:
-          path: dist
+          path: dist/wheels
           pattern: wheels-*
           merge-multiple: true
 
+      # Download the sdist artifact
+      - name: Download sdist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist/sdist
+
+      # pypa/gh-action-pypi-publish will automatically find all files
+      # in the top-level directory it's run from.
       - name: Publish package to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Tell the action to look in the directories where we placed the artifacts.
+          packages_dir: |
+            dist/wheels
+            dist/sdist
