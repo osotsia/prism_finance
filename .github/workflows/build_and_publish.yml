@@ -72,16 +72,12 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           args: --release --out dist
-          # THE FIX: Explicitly use a modern, supported manylinux image.
-          manylinux: manylinux_2_28_x86_64
+          container: quay.io/pypa/manylinux_2_28_x86_64
           before-script-linux: |
-            # On AlmaLinux 8+, dnf is the package manager.
-            # Update the system and install the EPEL repository.
+            # This script will now run correctly inside the specified container.
             dnf update -y
             dnf install -y epel-release
-            # The 'powertools' or 'crb' repo is often needed for build dependencies.
             dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled crb
-            # Install the required developer packages.
             dnf install -y ipopt-devel lapack-devel blas-devel
 
       # Unmodified step for macOS
