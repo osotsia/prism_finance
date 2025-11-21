@@ -63,61 +63,71 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # This step determines the path to the correct Python interpreter inside the
+      # manylinux container, so we can instruct maturin to build for only that version.
+      - name: Set Python path for manylinux container
+        if: runner.os == 'Linux'
+        id: manylinux_python
+        run: |
+          PY_VER_NODOTS=$(echo "${{ matrix.python-version }}" | tr -d '.')
+          echo "path=/opt/python/cp${PY_VER_NODOTS}-cp${PY_VER_NODOTS}/bin/python" >> $GITHUB_OUTPUT
+
       - name: Install System Dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install ipopt
 
+      # This is the build step for Linux. It runs inside a modern manylinux container.
       - name: Build binary wheel (Linux)
         if: runner.os == 'Linux'
         uses: PyO3/maturin-action@v1
         with:
-          args: --release --out dist
+          # Constrain maturin to build only for the Python version in the matrix
+          args: --release --out dist --interpreter ${{ steps.manylinux_python.outputs.path }}
+          # Explicitly specify the container image to avoid ambiguity
           container: quay.io/pypa/manylinux_2_28_x86_64
+          # This script runs inside the container before the build starts.
+          # It installs prerequisites, then downloads and builds the IPOPT C++ library.
           before-script-linux: |
-            set -ex  # Exit on error and print each command
-
-            # --------------------------------------------------------------------
-            # Step 1: Install prerequisites for building IPOPT
-            # --------------------------------------------------------------------
-            dnf install -y dnf-plugins-core
-            dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled crb
-            dnf install -y gcc gcc-c++ gcc-gfortran git patch wget pkg-config lapack-devel blas-devel
-
-            # Step 2: Run the entire IPOPT download and build process in a subshell
-            # This ensures that 'cd' commands do not affect the main script's working directory.
+            set -ex
+            # Run the entire IPOPT build in a subshell to isolate 'cd' commands
             (
-                echo "--- Starting IPOPT build in subshell ---"
-                git clone --branch stable/3.14 --depth 1 https://github.com/coin-or/Ipopt.git /tmp/Ipopt
-                cd /tmp/Ipopt
-                ./configure --prefix=/usr/local
-                make -j$(nproc)
-                make install
-                echo "--- Finished IPOPT build in subshell ---"
+              echo "--- Installing build dependencies and building IPOPT ---"
+              dnf install -y dnf-plugins-core
+              dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled crb
+              dnf install -y gcc gcc-c++ gcc-gfortran git patch wget pkg-config lapack-devel blas-devel
+              
+              git clone --branch stable/3.14 --depth 1 https://github.com/coin-or/Ipopt.git /tmp/Ipopt
+              cd /tmp/Ipopt
+              ./configure --prefix=/usr/local
+              make -j$(nproc)
+              make install
+              echo "--- Finished IPOPT build ---"
             )
 
-      # Unmodified step for macOS
+      # This is the simpler build step for macOS, which runs on the host.
       - name: Build binary wheel (macOS)
         if: runner.os == 'macOS'
         uses: PyO3/maturin-action@v1
         with:
           args: --release --out dist
 
+      # This step prepares the environment for testing the wheel.
       - name: Install dependencies for testing the wheel
         run: pip install pytest
 
+      # This step tests the Linux wheel inside the same type of container it was built in.
       - name: Install and test wheel (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          # Construct the path to the correct Python/pip inside the manylinux container
           PY_VER_NODOTS=$(echo "${{ matrix.python-version }}" | tr -d '.')
           PIP_PATH="/opt/python/cp${PY_VER_NODOTS}-cp${PY_VER_NODOTS}/bin/pip"
           
-          # Run tests inside the same container type where the wheel was built
           docker run --rm -v ${{ github.workspace }}:/ws:ro \
             quay.io/pypa/manylinux_2_28_x86_64 \
             bash -c "cd /ws && ${PIP_PATH} install dist/*.whl && ${PIP_PATH} -m pytest"
 
+      # This step tests the macOS wheel directly on the host.
       - name: Install and test wheel (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -129,7 +139,6 @@ jobs:
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
           path: dist
-
   # ====================================================================
   # Job 3: Build the source distribution (sdist)
   # ====================================================================
