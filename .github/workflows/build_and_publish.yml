@@ -60,34 +60,30 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      # CRITICAL FIX: Set up the correct Python version explicitly.
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install System Dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y coinor-libipopt-dev liblapack-dev libblas-dev
-
+      # This step is no longer needed here for the Linux build,
+      # as dependencies will be installed inside the manylinux container.
+      # It is still correct for the native macOS build.
       - name: Install System Dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install ipopt
 
-      # Build the wheel using maturin. The action will now use the Python
-      # version we just set up, not its own internal logic.
       - name: Build binary wheel
         uses: PyO3/maturin-action@v1
         with:
-          # Remove `cpython-version` as we now control the environment.
           args: --release --out dist
-          # This enables building manylinux wheels on the ubuntu-latest runner.
           manylinux: auto
+          # This script runs inside the manylinux container before building
+          before-script: |
+            # Enable EPEL repository to get access to scientific libraries
+            yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+            # Install the required developer packages
+            yum install -y ipopt-devel lapack-devel blas-devel
 
-      # BEST PRACTICE: Install the wheel you just built and test it.
       - name: Install dependencies for testing the wheel
         run: pip install pytest
 
@@ -95,7 +91,6 @@ jobs:
         shell: bash
         run: |
           pip install dist/*.whl
-          # Run tests to ensure the built wheel is functional
           pytest
 
       - name: Upload wheels as a build artifact
