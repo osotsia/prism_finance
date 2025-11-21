@@ -120,25 +120,30 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          # Define paths for both pip and python for the correct version
           PY_VER_NODOTS=$(echo "${{ matrix.python-version }}" | tr -d '.')
           PIP_PATH="/opt/python/cp${PY_VER_NODOTS}-cp${PY_VER_NODOTS}/bin/pip"
+          PYTHON_PATH="/opt/python/cp${PY_VER_NODOTS}-cp${PY_VER_NODOTS}/bin/python"
           
+          # Run tests using the PYTHON interpreter, not pip
           docker run --rm -v ${{ github.workspace }}:/ws:ro \
             quay.io/pypa/manylinux_2_28_x86_64 \
-            bash -c "cd /ws && ${PIP_PATH} install dist/*.whl && ${PIP_PATH} -m pytest"
+            bash -c "cd /ws && ${PIP_PATH} install dist/*.whl && ${PYTHON_PATH} -m pytest"
 
-      # This step tests the macOS wheel directly on the host.
+      # This step tests the macOS wheel on the host.
       - name: Install and test wheel (macOS)
         if: runner.os == 'macOS'
         run: |
           pip install dist/*.whl
-          pytest
+          # Use `python -m pytest` for robustness, ensuring the correct pytest is used.
+          python -m pytest
 
       - name: Upload wheels as a build artifact
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
           path: dist
+          
   # ====================================================================
   # Job 3: Build the source distribution (sdist)
   # ====================================================================
