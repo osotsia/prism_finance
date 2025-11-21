@@ -105,8 +105,21 @@ jobs:
       - name: Install dependencies for testing the wheel
         run: pip install pytest
 
-      - name: Install and test the wheel
+      - name: Install and test wheel (Linux)
+        if: runner.os == 'Linux'
         shell: bash
+        run: |
+          # Construct the path to the correct Python/pip inside the manylinux container
+          PY_VER_NODOTS=$(echo "${{ matrix.python-version }}" | tr -d '.')
+          PIP_PATH="/opt/python/cp${PY_VER_NODOTS}-cp${PY_VER_NODOTS}/bin/pip"
+          
+          # Run tests inside the same container type where the wheel was built
+          docker run --rm -v ${{ github.workspace }}:/ws:ro \
+            quay.io/pypa/manylinux_2_28_x86_64 \
+            bash -c "cd /ws && ${PIP_PATH} install dist/*.whl && ${PIP_PATH} -m pytest"
+
+      - name: Install and test wheel (macOS)
+        if: runner.os == 'macOS'
         run: |
           pip install dist/*.whl
           pytest
