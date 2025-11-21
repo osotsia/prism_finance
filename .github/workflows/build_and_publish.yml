@@ -115,7 +115,6 @@ jobs:
       - name: Install dependencies for testing the wheel
         run: pip install pytest
 
-      # This step tests the Linux wheel inside the same type of container it was built in.
       - name: Install and test wheel (Linux)
         if: runner.os == 'Linux'
         shell: bash
@@ -125,17 +124,15 @@ jobs:
           PIP_PATH="/opt/python/cp${PY_VER_NODOTS}-cp${PY_VER_NODOTS}/bin/pip"
           PYTHON_PATH="/opt/python/cp${PY_VER_NODOTS}-cp${PY_VER_NODOTS}/bin/python"
           
-          # Run tests using the PYTHON interpreter, not pip
+          # Install pytest AND the wheel inside the container, then run the tests
           docker run --rm -v ${{ github.workspace }}:/ws:ro \
             quay.io/pypa/manylinux_2_28_x86_64 \
-            bash -c "cd /ws && ${PIP_PATH} install dist/*.whl && ${PYTHON_PATH} -m pytest"
+            bash -c "cd /ws && ${PIP_PATH} install pytest dist/*.whl && ${PYTHON_PATH} -m pytest"
 
-      # This step tests the macOS wheel on the host.
       - name: Install and test wheel (macOS)
         if: runner.os == 'macOS'
         run: |
           pip install dist/*.whl
-          # Use `python -m pytest` for robustness, ensuring the correct pytest is used.
           python -m pytest
 
       - name: Upload wheels as a build artifact
@@ -143,7 +140,7 @@ jobs:
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.python-version }}
           path: dist
-          
+
   # ====================================================================
   # Job 3: Build the source distribution (sdist)
   # ====================================================================
