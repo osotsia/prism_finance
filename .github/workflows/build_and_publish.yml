@@ -49,13 +49,11 @@ jobs:
   build_wheels:
     name: Build wheels on ${{ matrix.os }} for Python ${{ matrix.python-version }}
     needs: test_and_lint
-    # Pin the OS version for reproducibility. macos-14 is ARM64.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [macos-14, ubuntu-latest]
-        # Use full python versions
         python-version: ["3.10", "3.11", "3.12"]
 
     steps:
@@ -65,24 +63,28 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # This step is no longer needed here for the Linux build,
-      # as dependencies will be installed inside the manylinux container.
-      # It is still correct for the native macOS build.
       - name: Install System Dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install ipopt
 
-      - name: Build binary wheel
+      # CORRECTED STEP FOR LINUX
+      - name: Build binary wheel (Linux)
+        if: runner.os == 'Linux'
         uses: PyO3/maturin-action@v1
         with:
           args: --release --out dist
           manylinux: auto
-          # This script runs inside the manylinux container before building
-          before-script: |
-            # Enable EPEL repository to get access to scientific libraries
+          # THE FIX: Use the correct parameter name 'before-script-linux'
+          before-script-linux: |
             yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
-            # Install the required developer packages
             yum install -y ipopt-devel lapack-devel blas-devel
+
+      # Unmodified step for macOS
+      - name: Build binary wheel (macOS)
+        if: runner.os == 'macOS'
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --out dist
 
       - name: Install dependencies for testing the wheel
         run: pip install pytest
