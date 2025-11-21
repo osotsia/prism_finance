@@ -74,16 +74,25 @@ jobs:
           args: --release --out dist
           container: quay.io/pypa/manylinux_2_28_x86_64
           before-script-linux: |
-            set -ex  # Exit on error and print commands
+            set -ex  # Exit on error and print each command
 
-            # Step 1: Install system dependencies as per the IPOPT documentation
-            # This provides the compilers and required libraries like LAPACK and BLAS.
+            # --------------------------------------------------------------------
+            # Step 1: Install prerequisites for building IPOPT
+            # --------------------------------------------------------------------
             dnf install -y dnf-plugins-core
             dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled crb
             dnf install -y gcc gcc-c++ gcc-gfortran git patch wget pkg-config lapack-devel blas-devel
 
-            # Step 2: Build and install the IPOPT C++ library from source
-            # The source code is already present from the `actions/checkout` step.
+            # --------------------------------------------------------------------
+            # Step 2: Download the IPOPT source code
+            # --------------------------------------------------------------------
+            # We clone it into a temporary directory to avoid polluting the workspace
+            git clone --branch stable/3.14 https://github.com/coin-or/Ipopt.git /tmp/Ipopt
+
+            # --------------------------------------------------------------------
+            # Step 3: Build and install the IPOPT C++ library from its source
+            # --------------------------------------------------------------------
+            cd /tmp/Ipopt
             mkdir -p build
             cd build
             ../configure --prefix=/usr/local
