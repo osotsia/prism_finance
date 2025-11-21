@@ -12,6 +12,7 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
+license = { file = "LICENSE" }
 
 [tool.maturin]
 # The name of the Python module that will contain the compiled Rust code.
