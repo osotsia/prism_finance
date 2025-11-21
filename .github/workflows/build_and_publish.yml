@@ -74,11 +74,21 @@ jobs:
           args: --release --out dist
           container: quay.io/pypa/manylinux_2_28_x86_64
           before-script-linux: |
-            # This script will now run correctly inside the specified container.
-            dnf update -y
-            dnf install -y epel-release
+            set -ex  # Exit on error and print commands
+
+            # Step 1: Install system dependencies as per the IPOPT documentation
+            # This provides the compilers and required libraries like LAPACK and BLAS.
+            dnf install -y dnf-plugins-core
             dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled crb
-            dnf install -y ipopt-devel lapack-devel blas-devel
+            dnf install -y gcc gcc-c++ gcc-gfortran git patch wget pkg-config lapack-devel blas-devel
+
+            # Step 2: Build and install the IPOPT C++ library from source
+            # The source code is already present from the `actions/checkout` step.
+            mkdir -p build
+            cd build
+            ../configure --prefix=/usr/local
+            make -j$(nproc)
+            make install
 
       # Unmodified step for macOS
       - name: Build binary wheel (macOS)
