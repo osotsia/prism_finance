@@ -67,16 +67,17 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ipopt
 
-      # CORRECTED STEP FOR LINUX
       - name: Build binary wheel (Linux)
         if: runner.os == 'Linux'
         uses: PyO3/maturin-action@v1
         with:
           args: --release --out dist
-          manylinux: auto
-          # THE FIX: Use the correct parameter name 'before-script-linux'
+          manylinux: auto  # This will default to manylinux2014
           before-script-linux: |
-            yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+            # Use the standard package to enable the EPEL repository.
+            # This is more reliable than fetching a URL directly.
+            yum install -y epel-release
+            # Install the required developer packages from the now-enabled repo.
             yum install -y ipopt-devel lapack-devel blas-devel
 
       # Unmodified step for macOS
