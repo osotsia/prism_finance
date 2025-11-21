@@ -83,21 +83,17 @@ jobs:
             dnf config-manager --set-enabled powertools || dnf config-manager --set-enabled crb
             dnf install -y gcc gcc-c++ gcc-gfortran git patch wget pkg-config lapack-devel blas-devel
 
-            # --------------------------------------------------------------------
-            # Step 2: Download the IPOPT source code
-            # --------------------------------------------------------------------
-            # We clone it into a temporary directory to avoid polluting the workspace
-            git clone --branch stable/3.14 https://github.com/coin-or/Ipopt.git /tmp/Ipopt
-
-            # --------------------------------------------------------------------
-            # Step 3: Build and install the IPOPT C++ library from its source
-            # --------------------------------------------------------------------
-            cd /tmp/Ipopt
-            mkdir -p build
-            cd build
-            ../configure --prefix=/usr/local
-            make -j$(nproc)
-            make install
+            # Step 2: Run the entire IPOPT download and build process in a subshell
+            # This ensures that 'cd' commands do not affect the main script's working directory.
+            (
+                echo "--- Starting IPOPT build in subshell ---"
+                git clone --branch stable/3.14 --depth 1 https://github.com/coin-or/Ipopt.git /tmp/Ipopt
+                cd /tmp/Ipopt
+                ./configure --prefix=/usr/local
+                make -j$(nproc)
+                make install
+                echo "--- Finished IPOPT build in subshell ---"
+            )
 
       # Unmodified step for macOS
       - name: Build binary wheel (macOS)
