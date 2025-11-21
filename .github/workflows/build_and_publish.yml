@@ -168,7 +168,6 @@ jobs:
   # ====================================================================
   publish_to_pypi:
     name: Publish to PyPI
-    # It now needs both the wheels and the sdist.
     needs: [build_wheels, build_sdist]
     if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
@@ -179,27 +178,32 @@ jobs:
       id-token: write
 
     steps:
-      # Download all wheel artifacts
+      # Step 1: Create a single directory to hold all distributables.
+      - name: Create distribution directory
+        run: mkdir -p dist/all
+
+      # Step 2: Download all wheel artifacts into the consolidated directory.
       - name: Download wheel artifacts
         uses: actions/download-artifact@v4
         with:
-          path: dist/wheels
+          path: dist/all
           pattern: wheels-*
           merge-multiple: true
 
-      # Download the sdist artifact
+      # Step 3: Download the sdist artifact into the same consolidated directory.
       - name: Download sdist artifact
         uses: actions/download-artifact@v4
         with:
           name: sdist
-          path: dist/sdist
+          path: dist/all
 
-      # pypa/gh-action-pypi-publish will automatically find all files
-      # in the top-level directory it's run from.
+      # (Optional but recommended) A debug step to verify the contents.
+      - name: List contents of distribution directory
+        run: ls -R dist/all
+
+      # Step 4: Publish all packages from the single, consolidated directory.
       - name: Publish package to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          # Tell the action to look in the directories where we placed the artifacts.
-          packages_dir: |
-            dist/wheels
-            dist/sdist
+          # This now points to a single, valid directory.
+          packages_dir: dist/all
