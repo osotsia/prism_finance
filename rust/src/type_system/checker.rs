@@ -58,21 +58,34 @@ impl<'a> TypeChecker<'a> {
 
         // --- PHASE 2: VERIFICATION ---
         if let NodeKind::Formula(_) = kind {
+            // Verify Temporal Type
             if let Some(decl) = &meta.temporal_type {
                 if Some(decl) != inferred_meta.temporal_type.as_ref() {
+                    let decl_str = format!("{:?}", decl); // e.g. "Stock"
+                    let inf_str = inferred_meta.temporal_type.as_ref()
+                        .map(|t| format!("{:?}", t))
+                        .unwrap_or_else(|| "None".to_string());
+                    
                     self.errors.push(ValidationError {
                         node_id, node_name: meta.name.clone(),
                         error_type: ValidationErrorType::TemporalMismatch,
-                        message: format!("Declared temporal '{:?}' != Inferred '{:?}'", decl, inferred_meta.temporal_type)
+                        message: format!("Declared temporal type '{}' does not match inferred type '{}'", decl_str, inf_str)
                     });
                 }
             }
+            
+            // Verify Unit
             if let Some(decl) = &meta.unit {
                 if Some(decl) != inferred_meta.unit.as_ref() {
+                     let decl_str = &decl.0; // e.g. "USD"
+                     let inf_str = inferred_meta.unit.as_ref()
+                        .map(|u| u.0.as_str())
+                        .unwrap_or("None");
+
                      self.errors.push(ValidationError {
                         node_id, node_name: meta.name.clone(),
                         error_type: ValidationErrorType::UnitMismatch,
-                        message: format!("Declared unit '{:?}' != Inferred '{:?}'", decl, inferred_meta.unit)
+                        message: format!("Declared unit '{}' does not match inferred unit '{}'", decl_str, inf_str)
                     });
                 }
             }
