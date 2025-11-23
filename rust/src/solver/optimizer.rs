@@ -115,7 +115,7 @@ pub fn solve(problem: PrismProblem) -> Result<Ledger, ComputationError> {
             let start_idx = i * model_len;
             let end_idx = start_idx + model_len;
             let var_values = final_x[start_idx..end_idx].to_vec();
-            final_ledger.insert(*var_id, Ok(Arc::new(var_values)));
+            final_ledger.insert(*var_id, Ok(crate::computation::ledger::Value::Series(Arc::new(var_values))));
         }
         final_ledger.solver_trace = Some(iteration_history);
         Ok(final_ledger)

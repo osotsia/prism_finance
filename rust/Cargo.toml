@@ -16,6 +16,7 @@ petgraph = "0.6.4"
 pyo3 = { version = "0.27", features = ["extension-module"] } # 0.27 really is the current version
 thiserror = "1.0"
 tempfile = "3"
+smallvec = "1.11"
 
 # For IPOPT FFI
 libc = "0.2"

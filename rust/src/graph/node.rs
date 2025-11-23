@@ -1,10 +1,7 @@
-//! Defines the `Node` and its associated types, representing a single
-//! variable or calculation step in the financial model.
+//! Defines the `Node` and its associated types.
 
-use petgraph::graph::NodeIndex;
-
-/// A unique, stable identifier for a node within the graph.
-pub type NodeId = NodeIndex;
+// Changed: Import NodeId from storage, remove petgraph dependency
+use crate::graph::storage::NodeId; 
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TemporalType {
@@ -12,25 +9,16 @@ pub enum TemporalType {
     Flow,
 }
 
-/// Represents the physical or monetary unit of a variable.
-///
-/// Used by the static analysis engine to perform dimensional analysis and
-/// prevent errors like multiplying 'USD/kW' by 'USD/MWh'.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Unit(pub String);
 
-/// Contains metadata for a node, used for auditing, display, and static analysis.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NodeMetadata {
-    /// A human-readable name for the variable (e.g., "Total Project Cost").
     pub name: String,
-    /// The temporal classification of the variable.
     pub temporal_type: Option<TemporalType>,
-    /// The unit of measurement for the variable.
     pub unit: Option<Unit>,
 }
 
-/// Defines the specific calculation performed by a `Formula` node.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
     Add,
@@ -38,54 +26,29 @@ pub enum Operation {
     Multiply,
     Divide,
     /// Represents a time-series lag operation (e.g., `.prev()`).
-    ///
-    /// The `default_node` provides the value for initial periods where
-    /// a lagged value is not yet available.
+    /// The `default_node` provides the value for initial periods.
     PreviousValue { lag: u32, default_node: NodeId },
 }
 
 /// The primary enum representing a node in the computation graph.
-///
-/// A node is the "skeleton" of the model. It defines the logic and relationships,
-/// but does not hold the computed values themselves (which are managed by the `computation::Ledger`).
+/// Note: With the new Registry architecture, this Enum is mostly for
+/// backward compatibility or external views, as the engine uses `NodeKind`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
-    /// An input variable. Its value is stored separately in the `ComputationGraph`
-    /// in a columnar format for performance.
     Constant { meta: NodeMetadata },
-    /// A calculated variable, derived from one or more parent nodes.
     Formula {
         op: Operation,
-        // The list of parent nodes this formula depends on. The order is significant
-        // for non-commutative operations like subtraction and division.
         parents: Vec<NodeId>,
         meta: NodeMetadata,
     },
-    /// A placeholder for a variable whose value is determined by the solver.
     SolverVariable { 
         meta: NodeMetadata,
-        /// If true, this variable is defined by a temporal recurrence (e.g., X[t] = f(X[t-1])).
-        /// If false, it's part of a simultaneous system of equations within a time step.
         is_temporal_dependency: bool,
     },
 }
 
 impl Node {
-    /// Returns a reference to the node's metadata.
-    ///
-    /// This helper provides a single, unified way to access metadata,
-    /// regardless of the node's variant, simplifying validation and other
-    /// graph-walking logic.
     pub fn meta(&self) -> &NodeMetadata {
-        match self {
-            Node::Constant { meta, .. } => meta,
-            Node::Formula { meta, .. } => meta,
-            Node::SolverVariable { meta, .. } => meta,
-        }
-    }
-
-    /// Returns a mutable reference to the node's metadata.
-    pub fn meta_mut(&mut self) -> &mut NodeMetadata {
         match self {
             Node::Constant { meta, .. } => meta,
             Node::Formula { meta, .. } => meta,

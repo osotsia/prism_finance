@@ -1,222 +1,229 @@
-//! The core calculation engine.
-//!
-//! This module defines `ComputationEngine`, a synchronous, single-threaded executor for the
-//! calculation graph. Its primary design feature is its ability to compute values on-demand
-//! based on the current state of a `Ledger`.
-//!
-//! Unlike a simple Directed Acyclic Graph (DAG) traversal, this engine builds its evaluation
-//! order dynamically. This allows it to function correctly even on graphs that are temporarily
-//! cyclic during solver execution, by respecting the pre-calculated or guessed values already
-//! present in the ledger. It effectively calculates only what is necessary to reach the target nodes.
+//! engine.rs
+//! 
+//! Architecture:
+//! 1. Planner: Topo-sorts the graph (DFS).
+//! 2. Executor: Iterates the plan, fetches inputs.
+//! 3. Kernel: Pure function `compute_kernel` performs math on `Value` enum.
+//!    - Parallel Ready: The Kernel has no side effects and no access to the graph/ledger.
 
-use crate::computation::ledger::{ComputationError, Ledger};
-use crate::graph::{ComputationGraph, Node, NodeId, Operation};
+use crate::computation::ledger::{ComputationError, Ledger, Value};
+use crate::graph::{ComputationGraph, NodeId, NodeKind, Operation};
 use std::cmp::max;
-use std::collections::HashSet;
 use std::sync::Arc;
 
-/// A synchronous, single-threaded computation engine.
 pub struct ComputationEngine<'a> {
     graph: &'a ComputationGraph,
 }
 
 impl<'a> ComputationEngine<'a> {
-    pub fn new(graph: &'a ComputationGraph) -> Self {
-        Self { graph }
-    }
+    pub fn new(graph: &'a ComputationGraph) -> Self { Self { graph } }
 
-    /// The "Orchestrator": Computes values for target nodes and stores them in the ledger.
-    ///
-    /// This method orchestrates the two main phases of computation:
-    /// 1.  **Planning:** It determines a valid, minimal sequence of calculations required
-    ///     to compute the targets, respecting any values already in the ledger.
-    /// 2.  **Execution:** It carries out the plan, evaluating each node in order.
     pub fn compute(&self, targets: &[NodeId], ledger: &mut Ledger) -> Result<(), ComputationError> {
-        // Phase 1: Determine the sequence of operations.
-        let execution_plan = self.plan_execution_order(targets, ledger)?;
-
-        // Phase 2: Execute the plan and populate the ledger.
-        self.execute_plan(&execution_plan, ledger)
+        ledger.ensure_capacity(self.graph.node_count());
+        let plan = self.plan_execution_order(targets, ledger)?;
+        self.execute_plan(&plan, ledger)
     }
 
-    // --- Private: Planning Phase ---
-
-    /// The "Planner": Generates a valid evaluation order (a topological sort) for the
-    /// required computations using a recursive Depth-First Search (DFS).
+    // --- Phase 1: Planner (DFS) ---
     fn plan_execution_order(
         &self,
         targets: &[NodeId],
         ledger: &Ledger,
     ) -> Result<Vec<NodeId>, ComputationError> {
         let mut plan = Vec::new();
-        let mut visiting = HashSet::new(); // For cycle detection.
-        let mut visited = HashSet::new(); // For memoization to avoid re-processing nodes.
+        // 0=Unvisited, 1=Visiting, 2=Visited
+        let mut state = vec![0u8; self.graph.node_count()];
 
         for &target_id in targets {
-            self.build_plan_recursive(target_id, ledger, &mut plan, &mut visiting, &mut visited)?;
+            self.build_plan_recursive(target_id, ledger, &mut plan, &mut state)?;
         }
         Ok(plan)
     }
 
-    /// Recursively builds the execution plan (a post-order traversal of the dependency graph).
     fn build_plan_recursive(
         &self,
         node_id: NodeId,
         ledger: &Ledger,
         plan: &mut Vec<NodeId>,
-        visiting: &mut HashSet<NodeId>,
-        visited: &mut HashSet<NodeId>,
+        state: &mut Vec<u8>,
     ) -> Result<(), ComputationError> {
-        // If the node's value is already known (in the ledger) or its dependencies
-        // have been fully processed, we don't need to do anything further.
-        if visited.contains(&node_id) || ledger.get(node_id).is_some() {
+        let idx = node_id.index();
+
+        if state[idx] == 2 || ledger.get(node_id).is_some() {
             return Ok(());
         }
-        // If we encounter a node that is currently in the recursion stack, we've found a cycle
-        // that isn't broken by a pre-existing ledger value. This is a fatal structural error.
-        if visiting.contains(&node_id) {
+        if state[idx] == 1 {
             return Err(ComputationError::CycleDetected);
         }
 
-        visiting.insert(node_id);
-
-        // Recursively build the plan for all parent dependencies.
-        if let Some(Node::Formula { parents, .. }) = self.graph.get_node(node_id) {
-            for &parent_id in parents {
-                self.build_plan_recursive(parent_id, ledger, plan, visiting, visited)?;
-            }
+        state[idx] = 1;
+        for &parent_id in self.graph.store.get_parents(node_id) {
+            self.build_plan_recursive(parent_id, ledger, plan, state)?;
         }
-
-        visiting.remove(&node_id);
-        visited.insert(node_id);
-        // Add the node to the plan only after all its dependencies have been added.
+        state[idx] = 2;
         plan.push(node_id);
         Ok(())
     }
 
-    // --- Private: Execution Phase ---
-
-    /// The "Executor": Iterates through the planned nodes and computes their values.
+    // --- Phase 2: Executor ---
     fn execute_plan(&self, plan: &[NodeId], ledger: &mut Ledger) -> Result<(), ComputationError> {
+        // FUTURE PARALLELISM: 
+        // 1. Group `plan` into independent waves/levels.
+        // 2. plan.par_iter().for_each(...)
         for &node_id in plan {
-            // The plan guarantees that when we evaluate a node, its parents are already in the ledger.
             let result = self.compute_single_node(node_id, ledger);
             ledger.insert(node_id, result);
         }
         Ok(())
     }
 
-    /// Computes the value for a single node, assuming its parents are in the ledger.
     fn compute_single_node(
         &self,
         node_id: NodeId,
         ledger: &Ledger,
-    ) -> Result<Arc<Vec<f64>>, ComputationError> {
-        // The node must exist in the graph if it's in our execution plan.
-        let node = self.graph.get_node(node_id).unwrap();
+    ) -> Result<Value, ComputationError> {
+        let kind = self.graph.get_node_kind(node_id);
 
-        match node {
-            Node::Constant { .. } => {
-                // For constants, the value is stored directly in the graph structure.
-                let val = self.graph.get_constant_value(node_id).cloned().unwrap_or_default();
-                Ok(Arc::new(val))
+        match kind {
+            // Optimization: Zero-copy scalar access
+            NodeKind::Scalar(val) => Ok(Value::Scalar(*val)),
+            
+            NodeKind::TimeSeries(idx) => {
+                let vec_ref = &self.graph.store.constants_data[*idx as usize];
+                // Clone the Vec into Arc (Cheap if we assume mostly scalars in model)
+                // If heavy time-series usage, we might optimize storage to return Arc directly.
+                Ok(Value::Series(Arc::new(vec_ref.clone())))
             }
-            Node::Formula { parents, op, .. } => {
-                // For formulas, we first gather the computed values of its parents from the ledger.
-                // Using Arc avoids deep-copying potentially large time-series vectors.
-                let parent_values = parents
-                    .iter()
-                    .map(|&pid| {
-                        match ledger.get(pid) {
-                            // This expect is safe due to the topological ordering of the execution plan.
-                            Some(Ok(val)) => Ok(val.clone()),
-                            Some(Err(e)) => Err(ComputationError::UpstreamError {
-                                node_id,
-                                node_name: node.meta().name.clone(),
-                                parent_id: pid,
-                                parent_name: self.graph.get_node(pid).unwrap().meta().name.clone(),
-                                source_error: Box::new(e.clone()),
-                            }),
-                            None => panic!("BUG: Parent must be computed before child."),
-                        }
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
 
-                self.evaluate_formula(node_id, op, &parent_values)
+            NodeKind::Formula(op) => {
+                let parents = self.graph.store.get_parents(node_id);
+                
+                // Collect inputs (Read-Only access to Ledger)
+                // Small stack allocation for parent values (usually 2 pointers)
+                let mut parent_values = smallvec::SmallVec::<[&Value; 2]>::new();
+                
+                for &pid in parents {
+                    match ledger.get(pid) {
+                        Some(Ok(val)) => parent_values.push(val),
+                        Some(Err(e)) => return Err(ComputationError::UpstreamError {
+                            node_id,
+                            node_name: self.graph.get_node_meta(node_id).name.clone(),
+                            parent_id: pid,
+                            parent_name: self.graph.get_node_meta(pid).name.clone(),
+                            source_error: Box::new(e.clone()),
+                        }),
+                        None => panic!("Bug: Scheduler missed dependency"),
+                    }
+                }
+                
+                // DELEGATE TO PURE KERNEL
+                let node_name = &self.graph.get_node_meta(node_id).name;
+                compute_kernel(node_id, node_name, op, &parent_values)
             }
-            Node::SolverVariable { .. } => {
-                // Solver variables are placeholders. If the engine is asked to compute one, it means
-                // it wasn't pre-filled by the solver, so we provide a default value.
-                Ok(Arc::new(vec![0.0]))
-            }
+
+            NodeKind::SolverVariable => Ok(Value::Scalar(0.0)),
         }
-    }
-
-    /// Performs the specific mathematical operation for a `Formula` node.
-    fn evaluate_formula(
-        &self,
-        node_id: NodeId,
-        op: &Operation,
-        parent_values: &[Arc<Vec<f64>>],
-    ) -> Result<Arc<Vec<f64>>, ComputationError> {
-        let node_name = self.graph.get_node(node_id).unwrap().meta().name.clone();
-
-        let result_vec = match op {
-            Operation::Add | Operation::Subtract | Operation::Multiply | Operation::Divide => {
-                if parent_values.len() != 2 {
-                    return Err(ComputationError::ParentCountMismatch { node_id, node_name, op: format!("{:?}", op), expected: 2, actual: parent_values.len() });
-                }
-                let lhs = &parent_values[0];
-                let rhs = &parent_values[1];
-                let len = max(lhs.len(), rhs.len());
-                let mut result = Vec::with_capacity(len);
-
-                for i in 0..len {
-                    // This handles time-series broadcasting: if one input is a scalar (len=1) and
-                    // the other is a vector, the scalar's last value is used for all time steps.
-                    let l = get_broadcast_value(lhs, i);
-                    let r = get_broadcast_value(rhs, i);
-                    match op {
-                        Operation::Add => result.push(l + r),
-                        Operation::Subtract => result.push(l - r),
-                        Operation::Multiply => result.push(l * r),
-                        Operation::Divide => {
-                            if r == 0.0 { return Err(ComputationError::DivisionByZero { node_id, node_name }); }
-                            result.push(l / r);
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-                result
-            }
-            Operation::PreviousValue { lag, .. } => {
-                if parent_values.len() != 2 {
-                    return Err(ComputationError::ParentCountMismatch { node_id, node_name, op: "PreviousValue".to_string(), expected: 2, actual: parent_values.len() });
-                }
-                let main_series = &parent_values[0];
-                let default_series = &parent_values[1];
-                let lag_usize = *lag as usize;
-                let len = main_series.len();
-                let mut result = Vec::with_capacity(len);
-
-                for i in 0..len {
-                    if i < lag_usize {
-                        result.push(get_broadcast_value(default_series, i));
-                    } else {
-                        result.push(main_series[i - lag_usize]);
-                    }
-                }
-                result
-            }
-        };
-
-        Ok(Arc::new(result_vec))
     }
 }
 
-/// A helper to retrieve a value from a vector for a given time-step `i`,
-/// broadcasting the last available value if `i` is out of bounds.
-#[inline]
-fn get_broadcast_value(series: &[f64], i: usize) -> f64 {
-    *series.get(i).unwrap_or_else(|| series.last().unwrap_or(&0.0))
+// --- The Compute Kernel (Pure Function) ---
+// This function has NO dependency on the Graph or Ledger struct.
+// It is perfectly thread-safe and cache-friendly.
+// --- The Compute Kernel (Pure Function) ---
+fn compute_kernel(
+    node_id: NodeId,
+    node_name: &str,
+    op: &Operation,
+    inputs: &[&Value],
+) -> Result<Value, ComputationError> {
+    
+    match op {
+        Operation::Add | Operation::Subtract | Operation::Multiply | Operation::Divide => {
+            if inputs.len() != 2 {
+                return Err(ComputationError::ParentCountMismatch { 
+                    node_id, node_name: node_name.into(), expected: 2, actual: inputs.len() 
+                });
+            }
+            let (lhs, rhs) = (inputs[0], inputs[1]);
+
+            // Branch: Scalar vs Scalar (Fastest path)
+            if let (Value::Scalar(l), Value::Scalar(r)) = (lhs, rhs) {
+                 return match op {
+                    // FIXED: Was l + l
+                    Operation::Add => Ok(Value::Scalar(l + r)), 
+                    Operation::Subtract => Ok(Value::Scalar(l - r)),
+                    Operation::Multiply => Ok(Value::Scalar(l * r)),
+                    Operation::Divide => {
+                        if *r == 0.0 { Err(ComputationError::DivisionByZero{ node_id, node_name: node_name.into() }) } 
+                        else { Ok(Value::Scalar(l / r)) }
+                    },
+                    _ => unreachable!(),
+                 };
+            }
+
+            // Branch: Broadcasting (Slow path)
+            let (l_len, l_is_scalar) = match lhs { Value::Scalar(_) => (1, true), Value::Series(v) => (v.len(), false) };
+            let (r_len, r_is_scalar) = match rhs { Value::Scalar(_) => (1, true), Value::Series(v) => (v.len(), false) };
+            let len = max(l_len, r_len);
+            
+            let mut result = Vec::with_capacity(len);
+            
+            let l_val = if l_is_scalar { if let Value::Scalar(v) = lhs { *v } else { 0.0 } } else { 0.0 };
+            let r_val = if r_is_scalar { if let Value::Scalar(v) = rhs { *v } else { 0.0 } } else { 0.0 };
+            
+            for i in 0..len {
+                let l = if l_is_scalar { l_val } else { get_vec_val(lhs, i) };
+                let r = if r_is_scalar { r_val } else { get_vec_val(rhs, i) };
+                
+                match op {
+                    Operation::Add => result.push(l + r),
+                    Operation::Subtract => result.push(l - r),
+                    Operation::Multiply => result.push(l * r),
+                    Operation::Divide => {
+                        if r == 0.0 { return Err(ComputationError::DivisionByZero{ node_id, node_name: node_name.into() }) } 
+                        else { result.push(l / r); }
+                    },
+                    _ => unreachable!(),
+                }
+            }
+            Ok(Value::Series(Arc::new(result)))
+        }
+
+        Operation::PreviousValue { lag, .. } => {
+            if inputs.len() != 2 { return Err(ComputationError::ParentCountMismatch { node_id, node_name: node_name.into(), expected: 2, actual: inputs.len() }); }
+            let (main, def) = (inputs[0], inputs[1]);
+            
+            let main_len = match main { Value::Scalar(_) => 1, Value::Series(v) => v.len() };
+            let def_len = match def { Value::Scalar(_) => 1, Value::Series(v) => v.len() };
+            let len = max(main_len, def_len); 
+            
+            let mut result = Vec::with_capacity(len);
+            let lag_u = *lag as usize;
+            
+            for i in 0..len {
+                if i < lag_u {
+                    result.push(get_val_at(def, i));
+                } else {
+                    result.push(get_val_at(main, i - lag_u));
+                }
+            }
+            Ok(Value::Series(Arc::new(result)))
+        }
+    }
+}
+
+#[inline(always)]
+fn get_vec_val(v: &Value, i: usize) -> f64 {
+    match v {
+        Value::Scalar(s) => *s, // Should be handled by hoist, but safety fallback
+        Value::Series(vec) => *vec.get(i).unwrap_or_else(|| vec.last().unwrap_or(&0.0))
+    }
+}
+
+#[inline(always)]
+fn get_val_at(v: &Value, i: usize) -> f64 {
+    match v {
+        Value::Scalar(s) => *s,
+        Value::Series(vec) => *vec.get(i).unwrap_or_else(|| vec.last().unwrap_or(&0.0))
+    }
 }

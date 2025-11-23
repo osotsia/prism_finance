@@ -1,14 +1,10 @@
 //! Defines the core data structures for the computation graph.
-//!
-//! The graph is a Directed Acyclic Graph (DAG) where nodes represent
-//! financial variables (constants, formulas) and edges represent
-//! dependencies between them. This module provides the building blocks
-//! for constructing, manipulating, and analyzing the model's structure.
-
 pub mod dag;
-pub mod edge;
+pub mod storage; // New module
+pub mod edge;    // Kept for Edge enum types (Temporal/Arithmetic), though mostly implicit now.
 pub mod node;
 
-// Re-export key types for convenient access from other modules.
+// Re-export key types for convenient access
 pub use dag::ComputationGraph;
-pub use node::{Node, NodeId, NodeMetadata, Operation, TemporalType, Unit};
+pub use storage::{NodeId, NodeKind}; // Export NodeKind and the new NodeId
+pub use node::{NodeMetadata, Operation, TemporalType, Unit};

@@ -81,11 +81,11 @@ def get_system_config():
     # Scale the number of nodes based on available RAM to ensure the benchmark
     # is substantial but does not exhaust system memory.
     if ram_gb < 8:
-        num_nodes = 100_000  # Low-spec systems
+        num_nodes = 200_000  # Low-spec systems
     elif ram_gb < 24:
-        num_nodes = 500_000  # Mid-range systems (e.g., 8-16GB RAM)
+        num_nodes = 10_000_000  # Mid-range systems (e.g., 8-16GB RAM)
     else:
-        num_nodes = 1_000_000 # High-spec systems (e.g., 32GB+ RAM)
+        num_nodes = 2_000_000 # High-spec systems (e.g., 32GB+ RAM)
         
     return {
         "ram_gb": f"{ram_gb:.1f}",
