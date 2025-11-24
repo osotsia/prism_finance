@@ -140,11 +140,15 @@ class Var:
         if not isinstance(lag, int) or lag < 1:
             raise ValueError("Lag must be a positive integer.")
         new_name = f"{self.name}.prev(lag={lag})"
+        
+        # Note: We use positional arguments here because the Rust argument name 'def'
+        # conflicts with the Python reserved keyword `def`.
+        # Rust signature: (main: usize, def: usize, lag: u32, name: String)
         child_id = self._canvas._graph.add_formula_previous_value(
-            main_parent_idx=self._node_id,
-            default_parent_idx=default._node_id,
-            lag=lag,
-            name=new_name
+            self._node_id,
+            default._node_id,
+            lag,
+            new_name
         )
         return Var._from_existing_node(canvas=self._canvas, node_id=child_id, name=new_name)
 
@@ -164,8 +168,9 @@ class Var:
         Returns:
             The Var instance, allowing for method chaining.
         """
+        # Rust signature: (id: usize, unit: Option<String>, temporal_type: Option<String>)
         old_unit, old_temporal_type = self._canvas._graph.set_node_metadata(
-            node_id=self._node_id,
+            id=self._node_id,
             unit=unit,
             temporal_type=temporal_type
         )

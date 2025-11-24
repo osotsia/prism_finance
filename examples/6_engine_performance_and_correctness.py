@@ -85,7 +85,7 @@ def get_system_config():
     elif ram_gb < 24:
         num_nodes = 10_000_000  # Mid-range systems (e.g., 8-16GB RAM)
     else:
-        num_nodes = 2_000_000 # High-spec systems (e.g., 32GB+ RAM)
+        num_nodes = 20_000_000 # High-spec systems (e.g., 32GB+ RAM)
         
     return {
         "ram_gb": f"{ram_gb:.1f}",

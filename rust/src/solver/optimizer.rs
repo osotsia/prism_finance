@@ -1,128 +1,104 @@
-//! Integrates with the IPOPT NLP solver to find solutions to constrained problems.
-
-use crate::computation::{ComputationError, Ledger};
-use crate::solver::ipopt_adapter;
-use crate::solver::ipopt_ffi;
-use crate::solver::problem::PrismProblem;
-
-use libc::c_int;
+use crate::store::{Registry, NodeId};
+use crate::compute::{engine::Engine, ledger::{Ledger, ComputationError, Value}};
+use super::problem::PrismProblem;
+use super::ipopt_adapter;
+use super::ipopt_ffi;
+use std::sync::{Arc, Mutex};
 use std::ffi::c_void;
-use std::sync::Arc;
+use libc::c_int;
 
-/// The main entry point for the solver.
-pub fn solve(problem: PrismProblem) -> Result<Ledger, ComputationError> {
-    let model_len = problem.model_len;
-    let num_vars = problem.variables.len() * model_len;
-    let num_constraints = problem.residuals.len() * model_len;
-
-    if num_vars == 0 {
-        return Ok(problem.base_ledger);
-    }
-    if num_constraints == 0 {
-        return Err(ComputationError::SolverConfiguration(
-            "Solver variables exist but no constraints were defined.".to_string(),
-        ));
+pub fn solve(
+    registry: &Registry, 
+    solver_vars: Vec<NodeId>, 
+    residuals: Vec<NodeId>,
+    base_ledger: Ledger
+) -> Result<Ledger, ComputationError> {
+    
+    // Heuristic: determine model length from the largest series in registry.
+    let mut model_len = 1;
+    for vec in &registry.constants_data {
+        if vec.len() > model_len { model_len = vec.len(); }
     }
 
-    // --- 1. Define bounds ---
-    let mut x_l: Vec<ipopt_ffi::Number> = vec![ipopt_ffi::IPOPT_NEGINF; num_vars];
-    let mut x_u: Vec<ipopt_ffi::Number> = vec![ipopt_ffi::IPOPT_POSINF; num_vars];
-    let mut g_l: Vec<ipopt_ffi::Number> = vec![0.0; num_constraints];
-    let mut g_u: Vec<ipopt_ffi::Number> = vec![0.0; num_constraints];
+    let problem = PrismProblem {
+        registry,
+        engine: Engine::new(registry),
+        variables: solver_vars.clone(),
+        residuals: residuals.clone(),
+        model_len,
+        base_ledger,
+        iteration_history: Mutex::new(Vec::new()),
+    };
+    
+    let n_vars = (problem.variables.len() * model_len) as c_int;
+    let n_cons = (problem.residuals.len() * model_len) as c_int;
+    
+    // Initial guess (all zeros)
+    let mut x_init = vec![0.0; n_vars as usize];
 
-    // --- 2. Initial guess ---
-    let mut x_init: Vec<ipopt_ffi::Number> = vec![0.0; num_vars];
-
-    // --- 3. Box user data to pass to callbacks ---
     let user_data = Box::into_raw(Box::new(problem));
 
-    // --- 4. Create the IPOPT problem ---
-    let ipopt_problem = unsafe {
+    let ipopt_prob = unsafe {
         ipopt_ffi::CreateIpoptProblem(
-            num_vars as c_int,
-            x_l.as_mut_ptr(),
-            x_u.as_mut_ptr(),
-            num_constraints as c_int,
-            g_l.as_mut_ptr(),
-            g_u.as_mut_ptr(),
-            (num_vars * num_constraints) as c_int, // Non-zeros in Jacobian (dense)
-            0,                                    // Non-zeros in Hessian (not used)
+            n_vars,
+            vec![ipopt_ffi::IPOPT_NEGINF; n_vars as usize].as_mut_ptr(),
+            vec![ipopt_ffi::IPOPT_POSINF; n_vars as usize].as_mut_ptr(),
+            n_cons,
+            vec![0.0; n_cons as usize].as_mut_ptr(),
+            vec![0.0; n_cons as usize].as_mut_ptr(),
+            n_vars * n_cons, // Dense Jacobian approximation
+            0, // Hessian
             ipopt_ffi::FR_C_STYLE,
             Some(ipopt_adapter::eval_f),
             Some(ipopt_adapter::eval_g),
             Some(ipopt_adapter::eval_grad_f),
             Some(ipopt_adapter::eval_jac_g),
-            Some(ipopt_adapter::eval_h), // Pass the dummy Hessian callback
+            Some(ipopt_adapter::eval_h),
             user_data as *mut c_void,
         )
     };
 
-    if ipopt_problem.is_null() {
-        let _ = unsafe { Box::from_raw(user_data) }; // Reclaim memory
-        return Err(ComputationError::SolverConfiguration(
-            "IPOPT failed to create problem.".to_string(),
-        ));
+    if ipopt_prob.is_null() {
+        let _ = unsafe { Box::from_raw(user_data) };
+        return Err(ComputationError::MathError("Failed to create IPOPT problem".into()));
+    }
+
+    unsafe {
+        ipopt_ffi::AddIpoptIntOption(ipopt_prob, "print_level\0".as_ptr() as *const i8, 0);
+        ipopt_ffi::AddIpoptStrOption(ipopt_prob, "hessian_approximation\0".as_ptr() as *const i8, "limited-memory\0".as_ptr() as *const i8);
+        ipopt_ffi::AddIpoptNumOption(ipopt_prob, "tol\0".as_ptr() as *const i8, 1e-9);
+        ipopt_ffi::SetIntermediateCallback(ipopt_prob, Some(ipopt_adapter::intermediate_callback));
+        
+        ipopt_ffi::IpoptSolve(
+            ipopt_prob,
+            x_init.as_mut_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            user_data as *mut c_void,
+        );
+        
+        ipopt_ffi::FreeIpoptProblem(ipopt_prob);
     }
     
-    // --- 5. Set solver options & Intermediate Callback ---
-    unsafe {
-        // Register the intermediate callback to capture iteration data.
-        ipopt_ffi::SetIntermediateCallback(
-            ipopt_problem,
-            Some(ipopt_adapter::intermediate_callback),
-        );
-
-        // Suppress verbose IPOPT banner and output.
-        ipopt_ffi::AddIpoptIntOption(ipopt_problem, "print_level\0".as_ptr() as *const i8, 0);
-        // Explicitly tell IPOPT to approximate the Hessian.
-        ipopt_ffi::AddIpoptStrOption(
-            ipopt_problem,
-            "hessian_approximation\0".as_ptr() as *const i8,
-            "limited-memory\0".as_ptr() as *const i8,
-        );
-        ipopt_ffi::AddIpoptNumOption(ipopt_problem, "tol\0".as_ptr() as *const i8, 1e-9);
-    };
-
-    // --- 6. Solve the problem ---
-    let solve_status = unsafe {
-        ipopt_ffi::IpoptSolve(
-            ipopt_problem,
-            x_init.as_mut_ptr(),
-            g_l.as_mut_ptr(),
-            std::ptr::null_mut(), // obj_val not needed
-            std::ptr::null_mut(), // mult_g not needed
-            std::ptr::null_mut(), // mult_x_L not needed
-            std::ptr::null_mut(), // mult_x_U not needed
-            user_data as *mut c_void,
-        )
-    };
-
-    let final_x = x_init;
-
-    // --- 7. Clean up ---
-    unsafe {
-        ipopt_ffi::FreeIpoptProblem(ipopt_problem);
-    };
     let solved_problem = unsafe { Box::from_raw(user_data) };
-    let iteration_history = solved_problem.iteration_history.into_inner().unwrap();
+    let final_x = x_init;
+    let history = solved_problem.iteration_history.into_inner().unwrap();
 
-    // --- 8. Process results ---
-    if solve_status == ipopt_ffi::ApplicationReturnStatus::Solve_Succeeded ||
-       solve_status == ipopt_ffi::ApplicationReturnStatus::Solved_To_Acceptable_Level
-    {
-        let mut final_ledger = solved_problem.base_ledger.clone();
-        for (i, var_id) in solved_problem.variables.iter().enumerate() {
-            let start_idx = i * model_len;
-            let end_idx = start_idx + model_len;
-            let var_values = final_x[start_idx..end_idx].to_vec();
-            final_ledger.insert(*var_id, Ok(crate::computation::ledger::Value::Series(Arc::new(var_values))));
-        }
-        final_ledger.solver_trace = Some(iteration_history);
-        Ok(final_ledger)
-    } else {
-        Err(ComputationError::SolverDidNotConverge(format!(
-            "IPOPT failed with status code: {:?}",
-            solve_status
-        )))
+    // Reconstruct final ledger
+    let mut final_ledger = solved_problem.base_ledger.clone();
+    for (i, &vid) in solved_problem.variables.iter().enumerate() {
+        let val = final_x[i*model_len..(i+1)*model_len].to_vec();
+        final_ledger.insert(vid, Ok(Value::Series(Arc::new(val))));
     }
+    final_ledger.solver_trace = Some(history);
+    
+    // Final Compute Pass: Target ALL nodes to ensure complete state
+    // Previously we only computed residuals, which left downstream reporting nodes empty.
+    let all_nodes: Vec<NodeId> = (0..registry.count()).map(NodeId::new).collect();
+    Engine::new(registry).compute(&all_nodes, &mut final_ledger)?;
+
+    Ok(final_ledger)
 }
