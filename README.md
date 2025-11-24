@@ -67,15 +67,15 @@ This script produces the following audit trace, detailing the calculation path f
 ```text
 Final EBIT: 35.000
 
-AUDIT TRACE for node '( (Revenue - (Revenue * COGS_Margin)) - Operating_Expenses )':
+AUDIT TRACE for node '((Revenue - (Revenue * COGS_Margin)) - Operating_Expenses)':
 --------------------------------------------------
-[L1] ( (Revenue - (Revenue * COGS_Margin)) - Operating_Expenses )[35.000] = (Revenue - (Revenue * COGS_Margin))[60.000] - Operating_Expenses[25.000]
-  |--[L2] (Revenue - (Revenue * COGS_Margin))[60.000] = Revenue[100.000] - (Revenue * COGS_Margin)[40.000]
-  |--  |--[L3] Revenue[100.000] -> Var([100.000])
-  |--  `--[L3] (Revenue * COGS_Margin)[40.000] = Revenue[100.000] * COGS_Margin[0.400]
-  |--  |--  |--[L4] Revenue[100.000] -> Var([100.000])
-  |--  |--  `--[L4] COGS_Margin[0.400] -> Var([0.400])
-  `--[L2] Operating_Expenses[25.000] -> Var([25.000])
+[L1] ((Revenue - (Revenue * COGS_Margin)) - Operating_Expenses)[35.000] = (Revenue - (Revenue * COGS_Margin))[60.000] - Operating_Expenses[25.000]
+|--[L2] (Revenue - (Revenue * COGS_Margin))[60.000] = Revenue[100.000] - (Revenue * COGS_Margin)[40.000]
+|  |--[L3] Revenue[100.000] -> Var([100.000])
+|  `--[L3] (Revenue * COGS_Margin)[40.000] = Revenue[100.000] * COGS_Margin[0.400]
+|     |---> (Ref to L3)
+|     `--[L4] COGS_Margin[0.400] -> Var([0.400])
+`--[L2] Operating_Expenses[25.000] -> Var([25.000])
 ```
 
 ### 2. Solving Circular Dependencies
@@ -112,16 +112,32 @@ The trace for a solved variable includes details from the solver, showing the co
 Solved Financing Fee: 20.41
 AUDIT TRACE for node 'Financing Fee':
 --------------------------------------------------
-[L1] Financing Fee[20.408] [SOLVED VIA SIMULTANEOUS EQUATION]
-  |
-  `-- Determined by solving constraints:
-     ||  |-- Constraint: Total Funds == (Project Cost + Financing Fee)
-     ||  `-- Constraint: Financing Fee == (Total Funds * Fee Rate)
-     |    | --- IPOPT Convergence ---
-     |      iter    obj_val      inf_pr      inf_du
-     |         0   0.0000e0    1.0000e3    0.0000e0
-     |         1   0.0000e0   7.9328e-4    1.0204e3
-     |         2   0.0000e0  6.2937e-10    0.0000e0
+[L1] Financing Fee[20.408] [SOLVED]
+|  Co-dependents: ["Total Funds", "Financing Fee"]
+|  --- IPOPT Convergence ---
+|   iter        obj      inf_pr      inf_du
+|      0   0.0000e0    1.0000e3    0.0000e0
+|      1   0.0000e0   7.9328e-4    1.0204e3
+|      2   0.0000e0  6.2937e-10    0.0000e0
+|
+`-- Defining Constraints:
+   |-- Constraint: Constraint: Total Funds == (Project Cost + Financing Fee)
+   |   |-- LHS [1020.4082]
+   |   |  `-- [L3] Total Funds[1020.408] [SOLVED]
+   |   |-- RHS [1020.4082]
+   |   |  `-- [L3] (Project Cost + Financing Fee)[1020.408] = Project Cost[1000.000] + Financing Fee[20.408]
+   |   |      |--[L4] Project Cost[1000.000] -> Var([1000.000])
+   |   |      `---> (Ref to L1)
+   |   `-- Diff: 0.000000 (Converged)
+   |
+   `-- Constraint: Constraint: Financing Fee == (Total Funds * Fee Rate)
+       |-- LHS [20.4082]
+       |  `-- -> (Ref to L1)
+       |-- RHS [20.4082]
+       |  `-- [L3] (Total Funds * Fee Rate)[20.408] = Total Funds[1020.408] * Fee Rate[0.020]
+       |      |---> (Ref to L3)
+       |      `--[L4] Fee Rate[0.020] -> Var([0.020])
+       `-- Diff: 0.000000 (Converged)
 ```
 
 ## Frequently Asked Questions
