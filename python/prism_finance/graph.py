@@ -292,13 +292,22 @@ class Canvas:
         
         values = self._last_ledger.get_value(target_var._node_id)
         if values is None:
-            # This can happen if the node was not part of the final computation,
-            # which indicates a potential logic error in the graph.
             raise ValueError(f"Value for '{target_var.name}' not found in the ledger.")
             
-        # For scalar models, which are common in many contexts, returning a single
-        # float is more convenient for the user.
-        return values[0] if len(values) == 1 else values
+        # Optimization #1 unified the ledger to vectors (length N).
+        # We need to unwrap this back to float if it is effectively a scalar.
+        
+        # Case 1: The model (or this variable) has length 1. It is structurally a scalar.
+        if len(values) == 1:
+            return values[0]
+
+        # Case 2: The model is a time-series (len > 1), but this variable is a constant scalar
+        # that was broadcasted (e.g., "Tax Rate"). We check the structural type in Rust.
+        if self._graph.is_scalar(target_var._node_id):
+            return values[0]
+            
+        # Case 3: It is a true time-series.
+        return values
 
     def trace(self, target_var: Var):
         """

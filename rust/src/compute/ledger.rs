@@ -1,6 +1,4 @@
 use crate::store::NodeId;
-use std::sync::Arc;
-use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Error, Debug, Clone, PartialEq)]
@@ -23,141 +21,96 @@ pub struct SolverIteration {
     pub inf_du: f64,
 }
 
-/// A unifying wrapper for the two types of data Prism handles.
-/// Used primarily for the public API and slow-path operations.
+/// A structure-of-arrays (SoA) backing store for model values.
+/// Data is stored in a single contiguous block: [Node0_Data, Node1_Data, ...].
+/// This ensures maximum cache locality and eliminates allocation during compute.
 #[derive(Debug, Clone)]
-pub enum Value {
-    Scalar(f64),
-    Series(Arc<Vec<f64>>),
-}
-
-impl Value {
-    pub fn len(&self) -> usize {
-        match self { Value::Scalar(_) => 1, Value::Series(v) => v.len() }
-    }
-    
-    pub fn shape(&self) -> (usize, bool) {
-        match self { Value::Scalar(_) => (1, true), Value::Series(v) => (v.len(), false) }
-    }
-    
-    pub fn get_at(&self, i: usize) -> f64 {
-        match self {
-            Value::Scalar(s) => *s,
-            Value::Series(vec) => *vec.get(i).unwrap_or_else(|| vec.last().unwrap_or(&0.0))
-        }
-    }
-    
-    #[inline(always)]
-    pub fn as_scalar_unchecked(&self) -> f64 {
-        match self { Value::Scalar(s) => *s, _ => 0.0 }
-    }
-
-    pub fn to_vec(&self) -> Vec<f64> {
-        match self { Value::Scalar(s) => vec![*s], Value::Series(s) => s.to_vec() }
-    }
-}
-
-/// Efficient status tracking for the SoA layout.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u8)]
-pub enum NodeStatus {
-    Uncomputed = 0,
-    ComputedScalar = 1,
-    ComputedSeries = 2,
-    Error = 3,
-}
-
-/// The DenseLedger organizes data in a Structure-of-Arrays (SoA) layout.
-#[derive(Debug, Clone, Default)]
 pub struct Ledger {
-    // Primary storage (Fast Path): Contiguous f64 array.
-    pub scalars: Vec<f64>,
+    /// The primary memory block.
+    /// Layout: Node 0 (len M), Node 1 (len M), ...
+    data: Vec<f64>,
     
-    // Secondary storage (Slow Path): For time-series data.
-    pub series: Vec<Option<Arc<Vec<f64>>>>,
-    
-    // Control Plane: Tracks the state of every node.
-    pub status: Vec<u8>, 
-    
-    // Exception Plane: Sparse storage for errors.
-    pub errors: HashMap<u32, ComputationError>,
+    /// The length of the time dimension (M).
+    /// 1 for scalar models, N for time-series models.
+    model_len: usize,
+
+    /// Number of nodes capacity.
+    node_capacity: usize,
+
+    /// Optimization: Tracks if the Ledger has allocated memory.
+    is_allocated: bool,
     
     pub solver_trace: Option<Vec<SolverIteration>>,
 }
 
 impl Ledger {
-    pub fn new() -> Self { Self::default() }
-
-    pub fn ensure_capacity(&mut self, size: usize) {
-        if self.status.len() < size {
-            self.scalars.resize(size, 0.0);
-            self.series.resize(size, None);
-            self.status.resize(size, NodeStatus::Uncomputed as u8);
+    pub fn new() -> Self {
+        Self {
+            data: Vec::new(),
+            model_len: 0,
+            node_capacity: 0,
+            is_allocated: false,
+            solver_trace: None,
         }
     }
 
-    // --- Fast Write API (Internal VM) ---
-
-    #[inline(always)]
-    pub fn set_scalar(&mut self, id: NodeId, val: f64) {
-        let idx = id.index();
-        self.scalars[idx] = val;
-        self.status[idx] = NodeStatus::ComputedScalar as u8;
-    }
-
-    pub fn set_series(&mut self, id: NodeId, val: Arc<Vec<f64>>) {
-        let idx = id.index();
-        self.series[idx] = Some(val);
-        self.status[idx] = NodeStatus::ComputedSeries as u8;
-    }
-
-    pub fn set_error(&mut self, id: NodeId, err: ComputationError) {
-        let idx = id.index();
-        self.status[idx] = NodeStatus::Error as u8;
-        self.errors.insert(id.0, err);
-    }
-    
-    // --- Compatibility API (Public / Legacy) ---
-
-    pub fn insert(&mut self, id: NodeId, result: Result<Value, ComputationError>) {
-        if id.index() >= self.status.len() {
-             self.ensure_capacity(id.index() + 1);
-        }
-        match result {
-            Ok(Value::Scalar(s)) => self.set_scalar(id, s),
-            Ok(Value::Series(s)) => self.set_series(id, s),
-            Err(e) => self.set_error(id, e),
+    /// Prepares the memory block.
+    /// Must be called before any compute or IO.
+    pub fn resize(&mut self, node_count: usize, model_len: usize) {
+        if self.node_capacity != node_count || self.model_len != model_len {
+            let total_size = node_count * model_len;
+            self.data.resize(total_size, 0.0);
+            self.model_len = model_len;
+            self.node_capacity = node_count;
+            self.is_allocated = true;
         }
     }
 
-    /// Reconstructs the `Option<Result<Value>>` view from the internal arrays.
-    /// Note: This returns an OWNED Value, not a reference, because Value is constructed on the fly.
-    pub fn get(&self, id: NodeId) -> Option<Result<Value, ComputationError>> {
-        let idx = id.index();
-        match self.status.get(idx).map(|&s| s)? {
-            0 => None, // NodeStatus::Uncomputed
-            1 => Some(Ok(Value::Scalar(self.scalars[idx]))), 
-            2 => Some(Ok(Value::Series(self.series[idx].clone().unwrap()))),
-            3 => Some(Err(self.errors.get(&id.0).cloned().unwrap_or(ComputationError::MathError("Unknown error".into())))),
-            _ => unreachable!(),
+    /// Writes a value to a node's slot.
+    /// Handles broadcasting: if input is scalar but model is vector, fills the slot.
+    pub fn set_input(&mut self, node: NodeId, value: &[f64]) -> Result<(), ComputationError> {
+        if !self.is_allocated {
+            return Err(ComputationError::Mismatch { msg: "Ledger not allocated".into() });
         }
-    }
+        
+        let start = node.index() * self.model_len;
+        let end = start + self.model_len;
+        let dest = &mut self.data[start..end];
 
-    #[inline(always)]
-    pub fn is_computed(&self, id: NodeId) -> bool {
-        if let Some(&s) = self.status.get(id.index()) {
-            s != NodeStatus::Uncomputed as u8
+        if value.len() == 1 {
+            // Broadcast scalar
+            let v = value[0];
+            for slot in dest.iter_mut() { *slot = v; }
+        } else if value.len() == self.model_len {
+            // Copy series
+            dest.copy_from_slice(value);
         } else {
-            false
+            return Err(ComputationError::Mismatch { 
+                msg: format!("Input len {} != Model len {}", value.len(), self.model_len) 
+            });
         }
+        Ok(())
     }
 
-    pub fn invalidate(&mut self, node_ids: impl IntoIterator<Item = NodeId>) {
-        for id in node_ids {
-            let idx = id.index();
-            if idx < self.status.len() {
-                self.status[idx] = NodeStatus::Uncomputed as u8;
-            }
-        }
+    /// Reads a value. Always returns a slice of length `model_len`.
+    pub fn get(&self, node: NodeId) -> Option<&[f64]> {
+        if !self.is_allocated || node.index() >= self.node_capacity { return None; }
+        
+        let start = node.index() * self.model_len;
+        Some(&self.data[start..start + self.model_len])
     }
+
+    /// Returns the raw pointer to the data block.
+    /// Used by the Engine for unsafe fast access.
+    #[inline(always)]
+    pub fn raw_data_mut(&mut self) -> *mut f64 {
+        self.data.as_mut_ptr()
+    }
+
+    #[inline(always)]
+    pub fn model_len(&self) -> usize { self.model_len }
+}
+
+impl Default for Ledger {
+    fn default() -> Self { Self::new() }
 }

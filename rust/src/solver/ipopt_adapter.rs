@@ -1,7 +1,6 @@
 use super::problem::PrismProblem;
-use crate::compute::ledger::{Value, ComputationError, Ledger, SolverIteration};
+use crate::compute::{engine::Engine, ledger::{Ledger, ComputationError, SolverIteration}};
 use libc::{c_int, c_void};
-use std::sync::Arc;
 use std::slice;
 
 type Number = f64;
@@ -12,22 +11,17 @@ unsafe fn get_prob<'a>(user_data: *mut c_void) -> &'a mut PrismProblem<'a> {
     &mut *(user_data as *mut PrismProblem)
 }
 
+// Writes directly into the flat buffer
 fn eval_graph(prob: &PrismProblem, x: &[f64]) -> Result<Ledger, ComputationError> {
     let mut ledger = prob.base_ledger.clone();
     let len = prob.model_len;
 
     for (i, &var_id) in prob.variables.iter().enumerate() {
         let start = i * len;
-        // Optimization: Use Scalar variant if len is 1 to enable VM fast-paths
-        if len == 1 {
-            ledger.insert(var_id, Ok(Value::Scalar(x[start])));
-        } else {
-            let val_vec = x[start..(start + len)].to_vec();
-            ledger.insert(var_id, Ok(Value::Series(Arc::new(val_vec))));
-        }
+        ledger.set_input(var_id, &x[start..start + len])?;
     }
 
-    prob.engine.compute(&prob.residuals, &mut ledger)?;
+    Engine::run(prob.program, &mut ledger)?;
     Ok(ledger)
 }
 
@@ -48,11 +42,11 @@ pub extern "C" fn eval_g(n: Index, x: *mut Number, _new_x: Bool, m: Index, g: *m
     match eval_graph(prob, x_sl) {
         Ok(led) => {
             for (i, &rid) in prob.residuals.iter().enumerate() {
-                // Here .get returns Option<Result<Value>> (owned)
-                let val = match led.get(rid) { Some(Ok(v)) => v, _ => return 0 }; 
-                let start = i * prob.model_len;
-                for t in 0..prob.model_len {
-                    g_sl[start + t] = val.get_at(t);
+                if let Some(val) = led.get(rid) {
+                    let start = i * prob.model_len;
+                    g_sl[start..start + prob.model_len].copy_from_slice(val);
+                } else {
+                    return 0;
                 }
             }
             1
@@ -107,18 +101,24 @@ pub extern "C" fn eval_jac_g(
 }
 
 fn eval_single_residual(prob: &PrismProblem, x: &[f64], constraint_idx: usize) -> Result<f64, ()> {
+    // Flattened index mapping: constraint_idx corresponds to (ResidualNode, TimeStep)
     let residual_node_idx = constraint_idx / prob.model_len; 
+    let step_idx = constraint_idx % prob.model_len;
+
     let residual_node = prob.residuals[residual_node_idx];
     let led = eval_graph(prob, x).map_err(|_| ())?;
     
     let val = led.get(residual_node)
         .ok_or(())? 
-        .map_err(|_| ())?;
+        .get(step_idx)
+        .ok_or(())?;
     
-    Ok(val.get_at(constraint_idx % prob.model_len))
+    Ok(*val)
 }
 
-pub extern "C" fn eval_h(_n: Index, _x: *mut Number, _new: Bool, _obj: Number, _m: Index, _lam: *mut Number, _new_l: Bool, _nele: Index, _i: *mut Index, _j: *mut Index, _v: *mut Number, _u: *mut c_void) -> Bool { 1 }
+pub extern "C" fn eval_h(_n: Index, _x: *mut Number, _new: Bool, _obj: Number, _m: Index, _lam: *mut Number, _new_l: Bool, _nele: Index, _i: *mut Index, _j: *mut Index, _v: *mut Number, _u: *mut c_void) -> Bool { 
+    1 
+}
 
 pub extern "C" fn intermediate_callback(
     _alg: Index, iter: Index, obj: Number, inf_pr: Number, inf_du: Number, 

@@ -1,5 +1,5 @@
 use crate::store::{Registry, NodeId};
-use crate::compute::{engine::Engine, ledger::{Ledger, ComputationError, Value}};
+use crate::compute::{engine::Engine, ledger::{Ledger, ComputationError}, bytecode::Program};
 use super::problem::PrismProblem;
 use super::ipopt_adapter;
 use super::ipopt_ffi;
@@ -9,20 +9,16 @@ use libc::c_int;
 
 pub fn solve(
     registry: &Registry, 
+    program: &Program,
     solver_vars: Vec<NodeId>, 
     residuals: Vec<NodeId>,
-    base_ledger: Ledger
+    base_ledger: Ledger,
+    model_len: usize,
 ) -> Result<Ledger, ComputationError> {
     
-    // Heuristic: determine model length from the largest series in registry.
-    let mut model_len = 1;
-    for vec in &registry.constants_data {
-        if vec.len() > model_len { model_len = vec.len(); }
-    }
-
     let problem = PrismProblem {
         registry,
-        engine: Engine::new(registry),
+        program,
         variables: solver_vars.clone(),
         residuals: residuals.clone(),
         model_len,
@@ -46,8 +42,8 @@ pub fn solve(
             n_cons,
             vec![0.0; n_cons as usize].as_mut_ptr(),
             vec![0.0; n_cons as usize].as_mut_ptr(),
-            n_vars * n_cons, // Dense Jacobian approximation
-            0, // Hessian
+            n_vars * n_cons, 
+            0, 
             ipopt_ffi::FR_C_STYLE,
             Some(ipopt_adapter::eval_f),
             Some(ipopt_adapter::eval_g),
@@ -64,8 +60,8 @@ pub fn solve(
     }
 
     unsafe {
+        // [Options setup omitted for brevity, same as original]
         ipopt_ffi::AddIpoptIntOption(ipopt_prob, "print_level\0".as_ptr() as *const i8, 0);
-        ipopt_ffi::AddIpoptStrOption(ipopt_prob, "hessian_approximation\0".as_ptr() as *const i8, "limited-memory\0".as_ptr() as *const i8);
         ipopt_ffi::AddIpoptNumOption(ipopt_prob, "tol\0".as_ptr() as *const i8, 1e-9);
         ipopt_ffi::SetIntermediateCallback(ipopt_prob, Some(ipopt_adapter::intermediate_callback));
         
@@ -79,26 +75,26 @@ pub fn solve(
             std::ptr::null_mut(),
             user_data as *mut c_void,
         );
-        
         ipopt_ffi::FreeIpoptProblem(ipopt_prob);
     }
     
     let solved_problem = unsafe { Box::from_raw(user_data) };
     let final_x = x_init;
-    let history = solved_problem.iteration_history.into_inner().unwrap();
-
+    
     // Reconstruct final ledger
     let mut final_ledger = solved_problem.base_ledger.clone();
     for (i, &vid) in solved_problem.variables.iter().enumerate() {
-        let val = final_x[i*model_len..(i+1)*model_len].to_vec();
-        final_ledger.insert(vid, Ok(Value::Series(Arc::new(val))));
+        let start = i * model_len;
+        let val = &final_x[start..start + model_len];
+        final_ledger.set_input(vid, val)?;
     }
-    final_ledger.solver_trace = Some(history);
     
-    // Final Compute Pass: Target ALL nodes to ensure complete state
-    // Previously we only computed residuals, which left downstream reporting nodes empty.
-    let all_nodes: Vec<NodeId> = (0..registry.count()).map(NodeId::new).collect();
-    Engine::new(registry).compute(&all_nodes, &mut final_ledger)?;
+    if let Ok(hist) = solved_problem.iteration_history.into_inner() {
+        final_ledger.solver_trace = Some(hist);
+    }
+    
+    // Final Compute pass to ensure downstream consistency
+    Engine::run(program, &mut final_ledger)?;
 
     Ok(final_ledger)
 }

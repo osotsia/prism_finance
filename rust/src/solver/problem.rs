@@ -1,11 +1,11 @@
 use crate::store::{Registry, NodeId};
-use crate::compute::engine::Engine;
 use crate::compute::ledger::{Ledger, SolverIteration};
+use crate::compute::bytecode::Program;
 use std::sync::Mutex;
 
 pub struct PrismProblem<'a> {
     pub registry: &'a Registry,
-    pub engine: Engine<'a>,
+    pub program: &'a Program, 
     
     pub variables: Vec<NodeId>,
     pub residuals: Vec<NodeId>,
