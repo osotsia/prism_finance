@@ -18,6 +18,9 @@ thiserror = "1.0"
 tempfile = "3"
 smallvec = "1.11"
 
+# SIMD abstraction for portable vectorization (AVX/Neon/SSE)
+wide = "0.7"
+
 # For IPOPT FFI
 libc = "0.2"
 
