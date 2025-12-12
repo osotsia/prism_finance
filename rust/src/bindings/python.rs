@@ -5,6 +5,7 @@ use crate::display::trace;
 use crate::solver::optimizer;
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyValueError, PyRuntimeError};
+use std::time::Instant;
 
 #[pyclass(name = "_Ledger")]
 #[derive(Debug, Clone, Default)]
@@ -18,7 +19,9 @@ impl PyLedger {
     pub fn new() -> Self { Self::default() }
     
     pub fn get_value(&self, node_id: usize) -> Option<Vec<f64>> {
-        self.inner.get(NodeId::new(node_id)).and_then(|r| r.as_ref().ok()).map(|v| v.to_vec())
+        self.inner.get(NodeId::new(node_id))
+            .and_then(|r| r.ok())
+            .map(|v| v.to_vec())
     }
 }
 
@@ -157,4 +160,95 @@ impl PyComputationGraph {
     }
     
     pub fn node_count(&self) -> usize { self.registry.count() }
+}
+
+struct Lcg {
+    state: u64,
+}
+
+impl Lcg {
+    fn new(seed: u64) -> Self { Self { state: seed } }
+    
+    fn next_f64(&mut self) -> f64 {
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (self.state >> 11) as f64 * (1.0 / 9007199254740992.0)
+    }
+
+    fn next_u32_range(&mut self, max: u32) -> u32 {
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        ((self.state >> 32) as u32) % max
+    }
+}
+
+#[pyfunction]
+pub fn benchmark_pure_rust(num_nodes: usize, input_fraction: f64) -> PyResult<(f64, f64, f64, usize)> {
+    let mut registry = Registry::new();
+    let num_inputs = (num_nodes as f64 * input_fraction) as usize;
+    let mut rng = Lcg::new(42);
+
+    let start_gen = Instant::now();
+
+    // 1. Generate Inputs
+    for i in 0..num_inputs {
+        let val = rng.next_f64() * 100.0;
+        let meta = NodeMetadata { name: format!("Input_{}", i), ..Default::default() };
+        registry.add_node(NodeKind::Scalar(val), &[], meta);
+    }
+
+    // 2. Generate Formulas
+    for i in num_inputs..num_nodes {
+        let p1 = rng.next_u32_range(i as u32);
+        let p2 = rng.next_u32_range(i as u32);
+        
+        let op = match rng.next_u32_range(3) {
+            0 => Operation::Add,
+            1 => Operation::Subtract,
+            _ => Operation::Multiply,
+        };
+
+        let parents = vec![NodeId::new(p1 as usize), NodeId::new(p2 as usize)];
+        let meta = NodeMetadata { name: format!("Formula_{}", i), ..Default::default() };
+        registry.add_node(NodeKind::Formula(op), &parents, meta);
+    }
+    
+    let gen_duration = start_gen.elapsed().as_secs_f64();
+
+    // 3. Benchmark Full Compute
+    let mut ledger = Ledger::new();
+    let targets: Vec<NodeId> = (0..registry.count()).map(NodeId::new).collect();
+    
+    // SCOPED ENGINE: Ensure borrow of registry ends before mutation
+    let compute_duration = {
+        let engine = Engine::new(&registry);
+        let start_compute = Instant::now();
+        engine.compute(&targets, &mut ledger)
+            .map_err(|e| PyRuntimeError::new_err(format!("Full compute failed: {:?}", e)))?;
+        start_compute.elapsed().as_secs_f64()
+    };
+
+    // 4. Benchmark Incremental Recompute
+    let num_changes = 5;
+    let mut changed_ids = Vec::with_capacity(num_changes);
+    
+    for _ in 0..num_changes {
+        let idx = rng.next_u32_range(num_inputs as u32) as usize;
+        match &mut registry.kinds[idx] {
+            NodeKind::Scalar(v) => *v = rng.next_f64() * 100.0,
+            _ => {}
+        }
+        changed_ids.push(NodeId::new(idx));
+    }
+
+    let start_incr = Instant::now();
+    let dirty = topology::downstream_from(&registry, &changed_ids);
+    ledger.invalidate(dirty);
+
+    // Create NEW engine instance for the incremental pass
+    let engine = Engine::new(&registry);
+    engine.compute(&targets, &mut ledger)
+        .map_err(|e| PyRuntimeError::new_err(format!("Incremental compute failed: {:?}", e)))?;
+
+    let incr_duration = start_incr.elapsed().as_secs_f64();
+
+    Ok((gen_duration, compute_duration, incr_duration, num_nodes))
 }

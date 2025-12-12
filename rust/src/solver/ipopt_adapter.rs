@@ -1,6 +1,5 @@
 use super::problem::PrismProblem;
 use crate::compute::ledger::{Value, ComputationError, Ledger, SolverIteration};
-use crate::store::NodeId;
 use libc::{c_int, c_void};
 use std::sync::Arc;
 use std::slice;
@@ -19,8 +18,13 @@ fn eval_graph(prob: &PrismProblem, x: &[f64]) -> Result<Ledger, ComputationError
 
     for (i, &var_id) in prob.variables.iter().enumerate() {
         let start = i * len;
-        let val_vec = x[start..(start + len)].to_vec();
-        ledger.insert(var_id, Ok(Value::Series(Arc::new(val_vec))));
+        // Optimization: Use Scalar variant if len is 1 to enable VM fast-paths
+        if len == 1 {
+            ledger.insert(var_id, Ok(Value::Scalar(x[start])));
+        } else {
+            let val_vec = x[start..(start + len)].to_vec();
+            ledger.insert(var_id, Ok(Value::Series(Arc::new(val_vec))));
+        }
     }
 
     prob.engine.compute(&prob.residuals, &mut ledger)?;
@@ -44,6 +48,7 @@ pub extern "C" fn eval_g(n: Index, x: *mut Number, _new_x: Bool, m: Index, g: *m
     match eval_graph(prob, x_sl) {
         Ok(led) => {
             for (i, &rid) in prob.residuals.iter().enumerate() {
+                // Here .get returns Option<Result<Value>> (owned)
                 let val = match led.get(rid) { Some(Ok(v)) => v, _ => return 0 }; 
                 let start = i * prob.model_len;
                 for t in 0..prob.model_len {
@@ -58,12 +63,12 @@ pub extern "C" fn eval_g(n: Index, x: *mut Number, _new_x: Bool, m: Index, g: *m
 
 pub extern "C" fn eval_jac_g(
     n: Index, x: *mut Number, _new: Bool, m: Index, nele: Index, 
-    iRow: *mut Index, jCol: *mut Index, values: *mut Number, user_data: *mut c_void
+    i_row: *mut Index, j_col: *mut Index, values: *mut Number, user_data: *mut c_void
 ) -> Bool {
     if values.is_null() {
         // Fill sparsity (dense)
-        let i_sl = unsafe { slice::from_raw_parts_mut(iRow, nele as usize) };
-        let j_sl = unsafe { slice::from_raw_parts_mut(jCol, nele as usize) };
+        let i_sl = unsafe { slice::from_raw_parts_mut(i_row, nele as usize) };
+        let j_sl = unsafe { slice::from_raw_parts_mut(j_col, nele as usize) };
         let mut idx = 0;
         for r in 0..m { for c in 0..n { i_sl[idx] = r; j_sl[idx] = c; idx += 1; } }
         return 1;
@@ -102,10 +107,14 @@ pub extern "C" fn eval_jac_g(
 }
 
 fn eval_single_residual(prob: &PrismProblem, x: &[f64], constraint_idx: usize) -> Result<f64, ()> {
-    let residual_node_idx = constraint_idx / prob.model_len; // In simple case model_len=1, so map directly
+    let residual_node_idx = constraint_idx / prob.model_len; 
     let residual_node = prob.residuals[residual_node_idx];
     let led = eval_graph(prob, x).map_err(|_| ())?;
-    let val = led.get(residual_node).ok_or(())?.as_ref().map_err(|_| ())?;
+    
+    let val = led.get(residual_node)
+        .ok_or(())? 
+        .map_err(|_| ())?;
+    
     Ok(val.get_at(constraint_idx % prob.model_len))
 }
 

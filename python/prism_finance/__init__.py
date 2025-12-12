@@ -5,6 +5,6 @@ Prism Finance: A Verifiable Calculation Engine.
 from .graph import Canvas, Var
 
 # Define package metadata
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = ["Canvas", "Var"]
