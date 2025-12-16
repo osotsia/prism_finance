@@ -7,8 +7,8 @@ This module provides algorithms to inspect the structure of the `Registry` witho
 ## Algorithms
 
 ### 1. Topology (`topology.rs`)
-*   **Kahn’s Algorithm**: Implements a non-recursive topological sort using an in-degree vector and a queue. This converts the DAG (Directed Acyclic Graph) into a linear execution sequence.
-*   **Cycle Detection**: If the sorted list length does not match the node count, a cycle is detected.
+*   **Depth-First Search (DFS)**: Implements a non-recursive, post-order DFS traversal to establish the execution sequence.
+*   **Cache Locality**: Unlike Breadth-First Search (Kahn's Algorithm), which processes the graph layer-by-layer, DFS places dependencies immediately adjacent to their consumers in the execution list. This maximizes the probability that input values are still hot in the CPU cache (L1/L2) when the consuming instruction executes.
 *   **Downstream Traversal**: A BFS implementation (`downstream_from`) used to identify the subgraph affected by a change in inputs. This is the core logic enabling incremental recomputation.
 
 ### 2. Validation Engine (`validation.rs`)

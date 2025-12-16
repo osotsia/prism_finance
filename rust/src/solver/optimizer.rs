@@ -3,7 +3,7 @@ use crate::compute::{engine::Engine, ledger::{Ledger, ComputationError}, bytecod
 use super::problem::PrismProblem;
 use super::ipopt_adapter;
 use super::ipopt_ffi;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::ffi::c_void;
 use libc::c_int;
 
@@ -16,11 +16,20 @@ pub fn solve(
     model_len: usize,
 ) -> Result<Ledger, ComputationError> {
     
+    // Map Logical IDs to Physical Storage Indices
+    let var_indices: Vec<usize> = solver_vars.iter()
+        .map(|&n| program.layout[n.index()] as usize)
+        .collect();
+        
+    let resid_indices: Vec<usize> = residuals.iter()
+        .map(|&n| program.layout[n.index()] as usize)
+        .collect();
+
     let problem = PrismProblem {
         registry,
         program,
-        variables: solver_vars.clone(),
-        residuals: residuals.clone(),
+        variables: var_indices, // Storing physical indices
+        residuals: resid_indices,
         model_len,
         base_ledger,
         iteration_history: Mutex::new(Vec::new()),
@@ -29,7 +38,6 @@ pub fn solve(
     let n_vars = (problem.variables.len() * model_len) as c_int;
     let n_cons = (problem.residuals.len() * model_len) as c_int;
     
-    // Initial guess (all zeros)
     let mut x_init = vec![0.0; n_vars as usize];
 
     let user_data = Box::into_raw(Box::new(problem));
@@ -60,7 +68,6 @@ pub fn solve(
     }
 
     unsafe {
-        // [Options setup omitted for brevity, same as original]
         ipopt_ffi::AddIpoptIntOption(ipopt_prob, "print_level\0".as_ptr() as *const i8, 0);
         ipopt_ffi::AddIpoptNumOption(ipopt_prob, "tol\0".as_ptr() as *const i8, 1e-9);
         ipopt_ffi::SetIntermediateCallback(ipopt_prob, Some(ipopt_adapter::intermediate_callback));
@@ -81,19 +88,19 @@ pub fn solve(
     let solved_problem = unsafe { Box::from_raw(user_data) };
     let final_x = x_init;
     
-    // Reconstruct final ledger
     let mut final_ledger = solved_problem.base_ledger.clone();
-    for (i, &vid) in solved_problem.variables.iter().enumerate() {
+    
+    // Apply solved values using physical indices
+    for (i, &storage_idx) in solved_problem.variables.iter().enumerate() {
         let start = i * model_len;
         let val = &final_x[start..start + model_len];
-        final_ledger.set_input(vid, val)?;
+        final_ledger.set_input_at_index(storage_idx, val)?;
     }
     
     if let Ok(hist) = solved_problem.iteration_history.into_inner() {
         final_ledger.solver_trace = Some(hist);
     }
     
-    // Final Compute pass to ensure downstream consistency
     Engine::run(program, &mut final_ledger)?;
 
     Ok(final_ledger)

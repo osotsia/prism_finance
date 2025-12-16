@@ -1,5 +1,5 @@
 use crate::compute::ledger::{Ledger, ComputationError};
-use crate::compute::bytecode::Program;
+use crate::compute::bytecode::{Program, OpCode};
 use crate::compute::kernel;
 
 pub struct Engine;
@@ -8,22 +8,35 @@ impl Engine {
     pub fn run(program: &Program, ledger: &mut Ledger) -> Result<(), ComputationError> {
         let model_len = ledger.model_len();
         let base_ptr = ledger.raw_data_mut();
-        
-        // Safety: The compiler guarantees indices < node_capacity.
+        let count = program.ops.len();
+
+        // Safety:
+        // 1. Compiler ensures p1/p2 indices are < ledger.size().
+        // 2. We iterate 0..count. Since we allocated storage for all nodes, 
+        //    and count is num_formulas, dest_ptr is always valid.
         unsafe {
-            for instr in &program.tape {
-                // Cast u32 -> usize for pointer offset
-                let dest_ptr = base_ptr.add(instr.target as usize * model_len);
-                let p1_ptr = base_ptr.add(instr.p1 as usize * model_len);
-                let p2_ptr = base_ptr.add(instr.p2 as usize * model_len);
+            for i in 0..count {
+                // Optimization: Strictly sequential write target.
+                // CPU can prefetch cache lines and merge stores efficiently.
+                let dest_ptr = base_ptr.add(i * model_len);
                 
-                // Pass OpCode directly. It contains u32, kernel casts to usize if needed.
+                let p1_idx = *program.p1.get_unchecked(i);
+                let p2_idx = *program.p2.get_unchecked(i);
+                
+                let p1_ptr = base_ptr.add(p1_idx as usize * model_len);
+                let p2_ptr = base_ptr.add(p2_idx as usize * model_len);
+                
+                // OpCode is u8, transmute to enum (safe because values are 0-5)
+                let op: OpCode = std::mem::transmute(*program.ops.get_unchecked(i));
+                let aux = *program.aux.get_unchecked(i);
+
                 kernel::execute_instruction(
-                    instr.op, 
-                    model_len, 
-                    dest_ptr, 
-                    p1_ptr, 
-                    p2_ptr
+                    op,
+                    model_len,
+                    dest_ptr,
+                    p1_ptr,
+                    p2_ptr,
+                    aux
                 );
             }
         }

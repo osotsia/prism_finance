@@ -11,14 +11,13 @@ unsafe fn get_prob<'a>(user_data: *mut c_void) -> &'a mut PrismProblem<'a> {
     &mut *(user_data as *mut PrismProblem)
 }
 
-// Writes directly into the flat buffer
 fn eval_graph(prob: &PrismProblem, x: &[f64]) -> Result<Ledger, ComputationError> {
     let mut ledger = prob.base_ledger.clone();
     let len = prob.model_len;
 
-    for (i, &var_id) in prob.variables.iter().enumerate() {
+    for (i, &var_idx) in prob.variables.iter().enumerate() {
         let start = i * len;
-        ledger.set_input(var_id, &x[start..start + len])?;
+        ledger.set_input_at_index(var_idx, &x[start..start + len])?;
     }
 
     Engine::run(prob.program, &mut ledger)?;
@@ -41,8 +40,8 @@ pub extern "C" fn eval_g(n: Index, x: *mut Number, _new_x: Bool, m: Index, g: *m
 
     match eval_graph(prob, x_sl) {
         Ok(led) => {
-            for (i, &rid) in prob.residuals.iter().enumerate() {
-                if let Some(val) = led.get(rid) {
+            for (i, &resid_idx) in prob.residuals.iter().enumerate() {
+                if let Some(val) = led.get_at_index(resid_idx) {
                     let start = i * prob.model_len;
                     g_sl[start..start + prob.model_len].copy_from_slice(val);
                 } else {
@@ -60,7 +59,6 @@ pub extern "C" fn eval_jac_g(
     i_row: *mut Index, j_col: *mut Index, values: *mut Number, user_data: *mut c_void
 ) -> Bool {
     if values.is_null() {
-        // Fill sparsity (dense)
         let i_sl = unsafe { slice::from_raw_parts_mut(i_row, nele as usize) };
         let j_sl = unsafe { slice::from_raw_parts_mut(j_col, nele as usize) };
         let mut idx = 0;
@@ -68,7 +66,6 @@ pub extern "C" fn eval_jac_g(
         return 1;
     }
     
-    // Finite difference Jacobian
     let n_usize = n as usize;
     let m_usize = m as usize;
     let val_sl = unsafe { slice::from_raw_parts_mut(values, nele as usize) };
@@ -101,14 +98,13 @@ pub extern "C" fn eval_jac_g(
 }
 
 fn eval_single_residual(prob: &PrismProblem, x: &[f64], constraint_idx: usize) -> Result<f64, ()> {
-    // Flattened index mapping: constraint_idx corresponds to (ResidualNode, TimeStep)
-    let residual_node_idx = constraint_idx / prob.model_len; 
+    let residual_idx_in_vec = constraint_idx / prob.model_len; 
     let step_idx = constraint_idx % prob.model_len;
 
-    let residual_node = prob.residuals[residual_node_idx];
+    let residual_storage_idx = prob.residuals[residual_idx_in_vec];
     let led = eval_graph(prob, x).map_err(|_| ())?;
     
-    let val = led.get(residual_node)
+    let val = led.get_at_index(residual_storage_idx)
         .ok_or(())? 
         .get(step_idx)
         .ok_or(())?;

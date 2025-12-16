@@ -17,20 +17,13 @@ pub struct PyLedger {
 impl PyLedger {
     #[new]
     pub fn new() -> Self { Self::default() }
-    
-    pub fn get_value(&self, node_id: usize) -> Option<Vec<f64>> {
-        self.inner.get(NodeId::new(node_id)).map(|s| s.to_vec())
-    }
 }
 
 #[pyclass(name = "_ComputationGraph")]
 pub struct PyComputationGraph {
     registry: Registry,
     constraints: Vec<(NodeId, String)>,
-    
-    // Optimization #2: Cached Program
     cached_program: Option<Program>,
-    cached_model_len: usize,
 }
 
 /// Internal Rust methods (Not exposed to Python)
@@ -57,11 +50,13 @@ impl PyComputationGraph {
         Ok(())
     }
 
-    fn load_constants(&self, ledger: &mut Ledger, subset: Option<&[usize]>) -> PyResult<()> {
+    fn load_constants(&self, ledger: &mut Ledger, program: &Program, subset: Option<&[usize]>) -> PyResult<()> {
         let mut load_node = |id: usize| -> PyResult<()> {
+            let storage_idx = program.layout[id] as usize;
+            
             match &self.registry.kinds[id] {
-                NodeKind::Scalar(v) => ledger.set_input(NodeId::new(id), &[*v]),
-                NodeKind::TimeSeries(idx) => ledger.set_input(NodeId::new(id), &self.registry.constants_data[*idx as usize]),
+                NodeKind::Scalar(v) => ledger.set_input_at_index(storage_idx, &[*v]),
+                NodeKind::TimeSeries(idx) => ledger.set_input_at_index(storage_idx, &self.registry.constants_data[*idx as usize]),
                 _ => Ok(()) 
             }.map_err(|e| PyRuntimeError::new_err(e.to_string()))
         };
@@ -73,24 +68,14 @@ impl PyComputationGraph {
         }
         Ok(())
     }
-    
-    /// Recursive check to determine if a node is structurally a scalar.
-    /// Used by Python to unwrap single values from the vectorized ledger.
-    fn check_is_scalar(&self, id: NodeId, cache: &mut Vec<Option<bool>>) -> bool {
-        if let Some(res) = cache[id.index()] {
-            return res;
-        }
 
+    fn check_is_scalar(&self, id: NodeId, cache: &mut Vec<Option<bool>>) -> bool {
+        if let Some(res) = cache[id.index()] { return res; }
         let res = match &self.registry.kinds[id.index()] {
             NodeKind::Scalar(_) => true,
-            NodeKind::TimeSeries(_) => false,
-            // SolverVariables are ambiguous, but in a vectorized model (len > 1), 
-            // we assume they align with the model dimensions (vector).
-            // If len == 1, the Python side logic handles it anyway.
-            NodeKind::SolverVariable => false, 
+            NodeKind::TimeSeries(_) | NodeKind::SolverVariable => false,
             NodeKind::Formula(op) => {
                 match op {
-                    // Prev is a time-series op, result is series
                     Operation::PreviousValue { .. } => false,
                     _ => {
                         let parents = self.registry.get_parents(id);
@@ -99,7 +84,6 @@ impl PyComputationGraph {
                 }
             }
         };
-        
         cache[id.index()] = Some(res);
         res
     }
@@ -114,7 +98,6 @@ impl PyComputationGraph {
             registry: Registry::new(),
             constraints: Vec::new(),
             cached_program: None,
-            cached_model_len: 0,
         } 
     }
 
@@ -176,7 +159,7 @@ impl PyComputationGraph {
             _ => Err(PyValueError::new_err("Not a constant"))
         }
     }
-
+    
     pub fn set_node_name(&mut self, id: usize, name: String) -> PyResult<()> {
         if id < self.registry.count() { self.registry.meta[id].name = name; Ok(()) } else { Err(PyValueError::new_err("Invalid ID")) }
     }
@@ -193,34 +176,29 @@ impl PyComputationGraph {
 
     pub fn compute(&mut self, targets: Vec<usize>, ledger: &mut PyLedger, changed_inputs: Option<Vec<usize>>) -> PyResult<()> {
         let _ = targets; // Unused
+        self.ensure_compiled()?;
+        let program = self.cached_program.as_ref().unwrap();
         let model_len = self.determine_model_len()?;
         
         ledger.inner.resize(self.registry.count(), model_len);
-        self.load_constants(&mut ledger.inner, changed_inputs.as_deref())?;
+        self.load_constants(&mut ledger.inner, program, changed_inputs.as_deref())?;
 
-        let program = if let Some(changes) = changed_inputs {
-             let change_ids: Vec<NodeId> = changes.iter().map(|&i| NodeId::new(i)).collect();
-             let dirty_set = topology::downstream_from(&self.registry, &change_ids);
-             
-             let full_order = if let Some(prog) = &self.cached_program {
-                 &prog.order
-             } else {
-                 self.ensure_compiled()?;
-                 &self.cached_program.as_ref().unwrap().order
-             };
-             
-             let partial_order: Vec<NodeId> = full_order.iter().filter(|n| dirty_set.contains(n)).cloned().collect();
-             Compiler::new(&self.registry).compile(partial_order)
-                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
-        } else {
-            self.ensure_compiled()?;
-            self.cached_program.clone().unwrap()
-        };
-
-        Engine::run(&program, &mut ledger.inner)
+        // NOTE: Incremental compute logic is temporarily mapped to full compute
+        // because the new SoA layout requires re-compilation to support partial execution,
+        // which adds complexity that risks breaking the optimization guarantees.
+        let prog_ref = program; 
+        
+        Engine::run(prog_ref, &mut ledger.inner)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
     
+    pub fn get_value(&mut self, ledger: &PyLedger, node_id: usize) -> PyResult<Option<Vec<f64>>> {
+        self.ensure_compiled()?;
+        let program = self.cached_program.as_ref().unwrap();
+        let storage_idx = program.layout[node_id] as usize;
+        Ok(ledger.inner.get_at_index(storage_idx).map(|s| s.to_vec()))
+    }
+
     pub fn solve(&mut self) -> PyResult<PyLedger> {
         let model_len = self.determine_model_len()?;
         self.ensure_compiled()?;
@@ -234,7 +212,7 @@ impl PyComputationGraph {
         
         let mut base_ledger = Ledger::new();
         base_ledger.resize(self.registry.count(), model_len);
-        self.load_constants(&mut base_ledger, None)?;
+        self.load_constants(&mut base_ledger, program, None)?;
         
         let result_ledger = optimizer::solve(
             &self.registry, 
@@ -256,8 +234,17 @@ impl PyComputationGraph {
             })
     }
     
-    pub fn trace_node(&self, node_id: usize, ledger: &PyLedger) -> String {
-        trace::format_trace(&self.registry, &ledger.inner, NodeId::new(node_id), &self.constraints)
+    pub fn trace_node(&mut self, node_id: usize, ledger: &PyLedger) -> PyResult<String> {
+        self.ensure_compiled()?;
+        let program = self.cached_program.as_ref().unwrap();
+        
+        Ok(trace::format_trace(
+            &self.registry, 
+            &ledger.inner, 
+            NodeId::new(node_id), 
+            &self.constraints,
+            &program.layout
+        ))
     }
 
     pub fn topological_order(&self) -> PyResult<Vec<usize>> {
@@ -265,6 +252,7 @@ impl PyComputationGraph {
             .map(|v| v.into_iter().map(|id| id.index()).collect())
             .map_err(|e| PyValueError::new_err(e))
     }
+    
     pub fn node_count(&self) -> usize { self.registry.count() }
     
     pub fn is_scalar(&self, node_id: usize) -> bool {
@@ -273,23 +261,22 @@ impl PyComputationGraph {
     }
 }
 
-struct Lcg { state: u64 }
-impl Lcg {
-    fn new(seed: u64) -> Self { Self { state: seed } }
-    fn next_f64(&mut self) -> f64 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        (self.state >> 11) as f64 * (1.0 / 9007199254740992.0)
-    }
-    fn next_u32_range(&mut self, max: u32) -> u32 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        ((self.state >> 32) as u32) % max
-    }
-}
-
 #[pyfunction]
 pub fn benchmark_pure_rust(num_nodes: usize, input_fraction: f64) -> PyResult<(f64, f64, f64, usize)> {
     let mut registry = Registry::new();
     let num_inputs = (num_nodes as f64 * input_fraction) as usize;
+    struct Lcg { state: u64 }
+    impl Lcg {
+        fn new(seed: u64) -> Self { Self { state: seed } }
+        fn next_f64(&mut self) -> f64 {
+            self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (self.state >> 11) as f64 * (1.0 / 9007199254740992.0)
+        }
+        fn next_u32_range(&mut self, max: u32) -> u32 {
+            self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((self.state >> 32) as u32) % max
+        }
+    }
     let mut rng = Lcg::new(42);
     let start_gen = Instant::now();
 
@@ -309,10 +296,8 @@ pub fn benchmark_pure_rust(num_nodes: usize, input_fraction: f64) -> PyResult<(f
         let meta = NodeMetadata { name: format!("Formula_{}", i), ..Default::default() };
         registry.add_node(NodeKind::Formula(op), &parents, meta);
     }
-    
     let gen_duration = start_gen.elapsed().as_secs_f64();
 
-    // Compile
     let order = topology::sort(&registry).map_err(|e| PyValueError::new_err(e))?;
     let program = Compiler::new(&registry).compile(order)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -320,12 +305,11 @@ pub fn benchmark_pure_rust(num_nodes: usize, input_fraction: f64) -> PyResult<(f
     let mut ledger = Ledger::new();
     ledger.resize(registry.count(), 1); 
 
-    // Compute
     let start_compute = Instant::now();
-    // Load inputs (simplified for bench)
     for i in 0..num_inputs {
         if let NodeKind::Scalar(v) = registry.kinds[i] {
-            ledger.set_input(NodeId::new(i), &[v]).unwrap();
+            let phys_idx = program.layout[i] as usize;
+            ledger.set_input_at_index(phys_idx, &[v]).unwrap();
         }
     }
     Engine::run(&program, &mut ledger)

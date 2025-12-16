@@ -8,13 +8,14 @@ pub fn format_trace(
     registry: &Registry,
     ledger: &Ledger,
     target: NodeId,
-    constraints: &[(NodeId, String)]
+    constraints: &[(NodeId, String)],
+    layout: &[u32]
 ) -> String {
-    // ... [Tracer struct init mostly same] ...
     let mut tracer = Tracer {
         registry,
         ledger,
         constraints,
+        layout,
         visited_at_level: HashMap::new(),
         printed_constraints: HashSet::new(),
         output: String::new(),
@@ -22,7 +23,7 @@ pub fn format_trace(
         in_solver_block: false,
         downstream_cache: HashMap::new(),
     };
-    // ... [Entry logic same] ...
+    
     if target.index() < registry.count() {
         let name = &registry.meta[target.index()].name;
         let _ = writeln!(tracer.output, "AUDIT TRACE for node '{}':", name);
@@ -36,6 +37,7 @@ struct Tracer<'a> {
     registry: &'a Registry,
     ledger: &'a Ledger,
     constraints: &'a [(NodeId, String)],
+    layout: &'a [u32],
     visited_at_level: HashMap<NodeId, usize>,
     printed_constraints: HashSet<NodeId>, 
     output: String,
@@ -45,11 +47,9 @@ struct Tracer<'a> {
 }
 
 impl<'a> Tracer<'a> {
-    // ... [Traversal Logic mostly same] ...
-
-    // Updated helper: Read slice from Ledger
     fn format_value(&self, id: NodeId) -> String {
-        match self.ledger.get(id) {
+        let phys_idx = self.layout[id.index()] as usize;
+        match self.ledger.get_at_index(phys_idx) {
             Some(slice) => {
                 if slice.len() == 1 { format!("[{:.3}]", slice[0]) }
                 else { format!("[{:.3}, ...]", slice[0]) }
@@ -59,18 +59,14 @@ impl<'a> Tracer<'a> {
     }
     
     fn get_scalar_or_first(&self, id: NodeId) -> f64 {
-        match self.ledger.get(id) {
+        let phys_idx = self.layout[id.index()] as usize;
+        match self.ledger.get_at_index(phys_idx) {
             Some(slice) => slice[0],
             None => 0.0,
         }
     }
 
-    // [Rest of recursion/printing logic remains identical to original trace.rs 
-    //  but using these updated helpers]
-    
-    // ...
     fn trace_node(&mut self, node_id: NodeId, level: usize, prefix: &str, _is_last: bool) {
-        // [Same implementation as before, calls self.format_value(node_id)]
         if let Some(&first_seen) = self.visited_at_level.get(&node_id) {
             let _ = writeln!(self.output, "{}-> (Ref to L{})", prefix, first_seen);
             return;
@@ -86,7 +82,6 @@ impl<'a> Tracer<'a> {
 
         match kind {
             NodeKind::Scalar(_) | NodeKind::TimeSeries(_) => {
-                 // For display, we might check registry constant data, but ledger data is the source of truth
                  let _ = writeln!(self.output, "{}{} -> Var", prefix, line_header);
             }
             NodeKind::Formula(op) => {
@@ -100,7 +95,6 @@ impl<'a> Tracer<'a> {
                 if self.in_solver_block { return; }
                 self.in_solver_block = true;
                 
-                // Print Solver Details
                 let child_stem = self.build_child_stem(prefix);
                 self.print_solver_convergence(&child_stem);
                 self.print_exploded_constraints(&child_stem, node_id, level);
@@ -109,8 +103,6 @@ impl<'a> Tracer<'a> {
             }
         }
     }
-    
-    // ... [Helpers: recurse_children, print_exploded_constraints, etc. adapted to use format_value] ...
     
     fn recurse_children(&mut self, prefix: &str, children: &[NodeId], level: usize) {
         let stem = self.build_child_stem(prefix);

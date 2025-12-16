@@ -290,7 +290,10 @@ class Canvas:
         if self._last_ledger is None:
             raise RuntimeError("Must call .compute_all() or .solve() before requesting a value.")
         
-        values = self._last_ledger.get_value(target_var._node_id)
+        # Note: We now call get_value on the Graph, passing the Ledger.
+        # This allows the Graph to map the Logical Node ID to the optimized physical storage index.
+        values = self._graph.get_value(self._last_ledger, target_var._node_id)
+        
         if values is None:
             raise ValueError(f"Value for '{target_var.name}' not found in the ledger.")
             

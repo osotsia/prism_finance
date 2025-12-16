@@ -6,7 +6,9 @@ type SimdType = f64x4;
 const LANE_WIDTH: usize = 4;
 
 /// Executes a single instruction.
-/// Uses SIMD for arithmetic and `copy_nonoverlapping` for shifts.
+///
+/// **Params:**
+/// - `aux`: Auxiliary data (e.g., lag for Prev).
 #[inline(always)]
 pub unsafe fn execute_instruction(
     op: OpCode,
@@ -14,14 +16,15 @@ pub unsafe fn execute_instruction(
     dest: *mut f64,
     src1: *const f64,
     src2: *const f64,
+    aux: u32,
 ) {
     match op {
         OpCode::Add => apply_arithmetic(len, dest, src1, src2, |a, b| a + b, |a, b| a + b),
         OpCode::Sub => apply_arithmetic(len, dest, src1, src2, |a, b| a - b, |a, b| a - b),
         OpCode::Mul => apply_arithmetic(len, dest, src1, src2, |a, b| a * b, |a, b| a * b),
         OpCode::Div => apply_arithmetic(len, dest, src1, src2, |a, b| a / b, |a, b| a / b),
-        OpCode::Prev { lag } => apply_shift(len, dest, src1, src2, lag as usize),
-        OpCode::Identity => {}
+        OpCode::Prev => apply_shift(len, dest, src1, src2, aux as usize),
+        OpCode::Identity => {} // No-op
     }
 }
 
