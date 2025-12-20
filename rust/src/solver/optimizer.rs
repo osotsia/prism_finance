@@ -16,20 +16,11 @@ pub fn solve(
     model_len: usize,
 ) -> Result<Ledger, ComputationError> {
     
-    // Map Logical IDs to Physical Storage Indices
-    let var_indices: Vec<usize> = solver_vars.iter()
-        .map(|&n| program.layout[n.index()] as usize)
-        .collect();
-        
-    let resid_indices: Vec<usize> = residuals.iter()
-        .map(|&n| program.layout[n.index()] as usize)
-        .collect();
-
     let problem = PrismProblem {
         registry,
         program,
-        variables: var_indices, // Storing physical indices
-        residuals: resid_indices,
+        variables: solver_vars, 
+        residuals,
         model_len,
         base_ledger,
         iteration_history: Mutex::new(Vec::new()),
@@ -90,11 +81,11 @@ pub fn solve(
     
     let mut final_ledger = solved_problem.base_ledger.clone();
     
-    // Apply solved values using physical indices
-    for (i, &storage_idx) in solved_problem.variables.iter().enumerate() {
+    // Use the logical set_value interface
+    for (i, &node_id) in solved_problem.variables.iter().enumerate() {
         let start = i * model_len;
         let val = &final_x[start..start + model_len];
-        final_ledger.set_input_at_index(storage_idx, val)?;
+        solved_problem.program.set_value(&mut final_ledger, node_id, val)?;
     }
     
     if let Ok(hist) = solved_problem.iteration_history.into_inner() {

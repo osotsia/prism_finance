@@ -15,9 +15,10 @@ fn eval_graph(prob: &PrismProblem, x: &[f64]) -> Result<Ledger, ComputationError
     let mut ledger = prob.base_ledger.clone();
     let len = prob.model_len;
 
-    for (i, &var_idx) in prob.variables.iter().enumerate() {
+    for (i, &node_id) in prob.variables.iter().enumerate() {
         let start = i * len;
-        ledger.set_input_at_index(var_idx, &x[start..start + len])?;
+        // Interface logic abstracted
+        prob.program.set_value(&mut ledger, node_id, &x[start..start + len])?;
     }
 
     Engine::run(prob.program, &mut ledger)?;
@@ -40,8 +41,9 @@ pub extern "C" fn eval_g(n: Index, x: *mut Number, _new_x: Bool, m: Index, g: *m
 
     match eval_graph(prob, x_sl) {
         Ok(led) => {
-            for (i, &resid_idx) in prob.residuals.iter().enumerate() {
-                if let Some(val) = led.get_at_index(resid_idx) {
+            for (i, &resid_id) in prob.residuals.iter().enumerate() {
+                // Interface logic abstracted
+                if let Some(val) = prob.program.get_value(&led, resid_id) {
                     let start = i * prob.model_len;
                     g_sl[start..start + prob.model_len].copy_from_slice(val);
                 } else {
@@ -101,10 +103,11 @@ fn eval_single_residual(prob: &PrismProblem, x: &[f64], constraint_idx: usize) -
     let residual_idx_in_vec = constraint_idx / prob.model_len; 
     let step_idx = constraint_idx % prob.model_len;
 
-    let residual_storage_idx = prob.residuals[residual_idx_in_vec];
+    let residual_id = prob.residuals[residual_idx_in_vec];
     let led = eval_graph(prob, x).map_err(|_| ())?;
     
-    let val = led.get_at_index(residual_storage_idx)
+    // Interface logic abstracted
+    let val = prob.program.get_value(&led, residual_id)
         .ok_or(())? 
         .get(step_idx)
         .ok_or(())?;

@@ -52,11 +52,10 @@ impl PyComputationGraph {
 
     fn load_constants(&self, ledger: &mut Ledger, program: &Program, subset: Option<&[usize]>) -> PyResult<()> {
         let mut load_node = |id: usize| -> PyResult<()> {
-            let storage_idx = program.layout[id] as usize;
-            
+            let node_id = NodeId::new(id);
             match &self.registry.kinds[id] {
-                NodeKind::Scalar(v) => ledger.set_input_at_index(storage_idx, &[*v]),
-                NodeKind::TimeSeries(idx) => ledger.set_input_at_index(storage_idx, &self.registry.constants_data[*idx as usize]),
+                NodeKind::Scalar(v) => program.set_value(ledger, node_id, &[*v]),
+                NodeKind::TimeSeries(idx) => program.set_value(ledger, node_id, &self.registry.constants_data[*idx as usize]),
                 _ => Ok(()) 
             }.map_err(|e| PyRuntimeError::new_err(e.to_string()))
         };
@@ -89,7 +88,6 @@ impl PyComputationGraph {
     }
 }
 
-/// Public Python API
 #[pymethods]
 impl PyComputationGraph {
     #[new]
@@ -174,8 +172,7 @@ impl PyComputationGraph {
         Ok((old_u, old_t))
     }
 
-    pub fn compute(&mut self, targets: Vec<usize>, ledger: &mut PyLedger, changed_inputs: Option<Vec<usize>>) -> PyResult<()> {
-        let _ = targets; // Unused
+    pub fn compute(&mut self, _targets: Vec<usize>, ledger: &mut PyLedger, changed_inputs: Option<Vec<usize>>) -> PyResult<()> {
         self.ensure_compiled()?;
         let program = self.cached_program.as_ref().unwrap();
         let model_len = self.determine_model_len()?;
@@ -183,20 +180,15 @@ impl PyComputationGraph {
         ledger.inner.resize(self.registry.count(), model_len);
         self.load_constants(&mut ledger.inner, program, changed_inputs.as_deref())?;
 
-        // NOTE: Incremental compute logic is temporarily mapped to full compute
-        // because the new SoA layout requires re-compilation to support partial execution,
-        // which adds complexity that risks breaking the optimization guarantees.
-        let prog_ref = program; 
-        
-        Engine::run(prog_ref, &mut ledger.inner)
+        Engine::run(program, &mut ledger.inner)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
     
     pub fn get_value(&mut self, ledger: &PyLedger, node_id: usize) -> PyResult<Option<Vec<f64>>> {
         self.ensure_compiled()?;
         let program = self.cached_program.as_ref().unwrap();
-        let storage_idx = program.layout[node_id] as usize;
-        Ok(ledger.inner.get_at_index(storage_idx).map(|s| s.to_vec()))
+        // Centralized retrieval logic
+        Ok(program.get_value(&ledger.inner, NodeId::new(node_id)).map(|s| s.to_vec()))
     }
 
     pub fn solve(&mut self) -> PyResult<PyLedger> {
@@ -214,6 +206,7 @@ impl PyComputationGraph {
         base_ledger.resize(self.registry.count(), model_len);
         self.load_constants(&mut base_ledger, program, None)?;
         
+        // Pass NodeIds directly
         let result_ledger = optimizer::solve(
             &self.registry, 
             program, 
@@ -308,8 +301,8 @@ pub fn benchmark_pure_rust(num_nodes: usize, input_fraction: f64) -> PyResult<(f
     let start_compute = Instant::now();
     for i in 0..num_inputs {
         if let NodeKind::Scalar(v) = registry.kinds[i] {
-            let phys_idx = program.layout[i] as usize;
-            ledger.set_input_at_index(phys_idx, &[v]).unwrap();
+            // Using logic interface even in benchmark
+            program.set_value(&mut ledger, NodeId::new(i), &[v]).unwrap();
         }
     }
     Engine::run(&program, &mut ledger)
