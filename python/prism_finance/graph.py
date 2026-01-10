@@ -183,12 +183,12 @@ class Var:
         return Var._from_existing_node(self._canvas, child_id, new_name)
 
     def declare_type(self, *, unit: str = None, temporal_type: str = None) -> 'Var':
-        """Sets metadata for static validation (units, stocks/flows)."""
-        self._canvas._graph.set_node_metadata(
-            id=self._node_id,
-            unit=unit,
-            temporal_type=temporal_type
-        )
+        """Declares metadata and issues warnings if existing types are overwritten."""
+        old_u, old_t = self._canvas._graph.set_node_metadata(self._node_id, unit, temporal_type)
+        if unit and old_u and unit != old_u:
+            warnings.warn(f"Overwriting existing unit '{old_u}' with '{unit}' for Var '{self.name}'.", UserWarning, stacklevel=2)
+        if temporal_type and old_t and temporal_type != old_t:
+            warnings.warn(f"Overwriting existing temporal_type '{old_t}' with '{temporal_type}' for Var '{self.name}'.", UserWarning, stacklevel=2)
         return self
 
 
