@@ -18,6 +18,8 @@ thiserror = "1.0"
 tempfile = "3"
 smallvec = "1.11"
 
+rayon = "1.10" # Added for parallel scenario execution
+
 # SIMD abstraction for portable vectorization (AVX/Neon/SSE)
 wide = "0.7"
 

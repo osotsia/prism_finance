@@ -7,6 +7,9 @@ use pyo3::prelude::*;
 use pyo3::exceptions::{PyValueError, PyRuntimeError};
 use std::time::Instant;
 
+use rayon::prelude::*;
+use std::collections::HashMap;
+
 #[pyclass(name = "_Ledger")]
 #[derive(Debug, Clone, Default)]
 pub struct PyLedger {
@@ -172,7 +175,7 @@ impl PyComputationGraph {
         Ok((old_u, old_t))
     }
 
-    pub fn compute(&mut self, _targets: Vec<usize>, ledger: &mut PyLedger, changed_inputs: Option<Vec<usize>>) -> PyResult<()> {
+    pub fn compute(&mut self, ledger: &mut PyLedger, changed_inputs: Option<Vec<usize>>) -> PyResult<()> {
         self.ensure_compiled()?;
         let program = self.cached_program.as_ref().unwrap();
         let model_len = self.determine_model_len()?;
@@ -252,6 +255,35 @@ impl PyComputationGraph {
         let mut cache = vec![None; self.registry.count()];
         self.check_is_scalar(NodeId::new(node_id), &mut cache)
     }
+
+    /// Internal parallel executor for a batch of scenarios.
+    pub fn compute_batch(
+        &mut self, 
+        py: Python<'_>,
+        scenarios: HashMap<String, HashMap<usize, Vec<f64>>>
+    ) -> PyResult<HashMap<String, PyLedger>> {
+        self.ensure_compiled()?;
+        let program = self.cached_program.as_ref().unwrap();
+        let model_len = self.determine_model_len()?;
+        
+        let mut base_ledger = Ledger::new();
+        base_ledger.resize(self.registry.count(), model_len);
+        self.load_constants(&mut base_ledger, program, None)?;
+
+        let results: Result<HashMap<String, PyLedger>, String> = py.allow_threads(|| {
+            scenarios.into_par_iter().map(|(name, overrides)| {
+                let mut ledger = base_ledger.clone();
+                for (idx, val) in overrides {
+                    program.set_value(&mut ledger, NodeId::new(idx), &val).map_err(|e| e.to_string())?;
+                }
+                Engine::run(program, &mut ledger).map_err(|e| e.to_string())?;
+                Ok((name, PyLedger { inner: ledger }))
+            }).collect()
+        });
+        results.map_err(PyRuntimeError::new_err)
+    }
+
+
 }
 
 #[pyfunction]

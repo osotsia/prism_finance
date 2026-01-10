@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-ITERATIONS=40
+ITERATIONS=150
 BENCH_SCRIPT="examples/benchmark.py"
 TEMP_FILE="bench_results.tmp"
 

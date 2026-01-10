@@ -1,34 +1,72 @@
 """
 Defines the user-facing graph construction API (Canvas and Var).
-"""
-import warnings
-from typing import List, Union, overload, Any
-from contextvars import ContextVar
-from . import _core  # Import the compiled Rust extension module
 
-# A context variable to hold the currently active Canvas instance.
+Architecture Overview:
+1. Canvas: The graph lifecycle container. Manages the link between the 
+   structural Registry and the physical Ledger (data storage).
+2. Var: A lightweight proxy (handle) for a graph node. Contains only the 
+   NodeId and a reference to its parent Canvas.
+3. Scalar Promotion: Automatic conversion of Python constants (int/float) 
+   into Var nodes during arithmetic to ensure DSL fluency.
+4. Batching: Release of the GIL to allow Rust/Rayon to compute multiple 
+   Ledger instances in parallel for scenario analysis.
+"""
+
+import warnings
+from typing import List, Union, Dict, Any, Optional
+from contextvars import ContextVar
+from . import _core  # Compiled Rust extension module
+
+# Thread-safe context for implicit Canvas reference
 _active_canvas: ContextVar['Canvas'] = ContextVar("active_canvas")
 
 
 def get_active_canvas() -> 'Canvas':
-    """Returns the active Canvas from the current context."""
+    """Retrieves the Canvas currently managing node creation in this thread."""
     try:
         return _active_canvas.get()
     except LookupError:
         raise RuntimeError(
-            "A Var can only be created or used inside a 'with Canvas():' block."
+            "Prism variables (Var) must be created within a 'with Canvas():' block."
         )
 
 
+class ScenarioResult:
+    """
+    A read-only handle for data from a specific scenario in a parallel batch.
+    
+    This acts as a window into a specific Rust _Ledger, using the structural 
+    metadata of the Canvas to correctly interpret vectorized vs. scalar data.
+    """
+    def __init__(self, canvas: 'Canvas', ledger: _core._Ledger):
+        self._canvas = canvas
+        self._ledger = ledger
+
+    def get(self, target_var: 'Var') -> Union[float, List[float]]:
+        """Retrieves values from the scenario-specific memory ledger."""
+        values = self._canvas._graph.get_value(self._ledger, target_var._node_id)
+        if values is None:
+            raise ValueError(f"Value for '{target_var.name}' not found in scenario.")
+        
+        # Scalar Unwrapping Logic
+        if len(values) == 1 or self._canvas._graph.is_scalar(target_var._node_id):
+            return values[0]
+        return values
+
+
 class Var:
-    """Represents a variable (a node) in the financial model."""
+    """A proxy representing a node in the financial calculation graph."""
 
     @staticmethod
     def _normalize_value(value: Any) -> List[float]:
-        """A private helper to consistently coerce input values into a list of floats."""
+        """Consistently coerces scalars or iterables into Rust-compatible float vectors."""
         if isinstance(value, (int, float)):
             return [float(value)]
-        return [float(v) for v in value]
+        try:
+            return [float(v) for v in value]
+        except (TypeError, ValueError):
+            # Fallback for complex types that might be float-convertible
+            return [float(value)]
 
     def __init__(
         self,
@@ -39,13 +77,12 @@ class Var:
         temporal_type: str = None,
     ):
         if name is None:
-            raise ValueError("A 'name' must be provided for each Var.")
+            raise ValueError("A human-readable 'name' is required for all Var nodes.")
 
         self._canvas = get_active_canvas()
         self._py_name = name
         
         normalized_value = Var._normalize_value(value)
-        
         self._node_id = self._canvas._graph.add_constant_node(
             value=normalized_value,
             name=name,
@@ -55,136 +92,110 @@ class Var:
 
     @classmethod
     def _from_existing_node(cls, canvas: 'Canvas', node_id: int, name: str) -> 'Var':
-        """Internal constructor to wrap an existing node_id in a Var object."""
+        """Internal: Wraps a raw Rust NodeId into the Python API."""
         var_instance = cls.__new__(cls)
         var_instance._canvas = canvas
         var_instance._node_id = node_id
         var_instance._py_name = name
-        # The name is already set in the core graph during formula creation.
         return var_instance
 
     @property
     def name(self) -> str:
-        """The human-readable name of the Var."""
         return self._py_name
         
     @name.setter
     def name(self, new_name: str):
-        """Sets the name of the Var, updating both Python and the core engine."""
         self._py_name = new_name
         self._canvas._graph.set_node_name(self._node_id, new_name)
 
-    def __repr__(self) -> str:
-        return f"Var(name='{self.name}', id={self._node_id})"
-    
     def set(self, value: Union[int, float, List[float]]):
-        """
-        Updates the value of this constant Var. This operation marks the Var
-        as 'dirty' for subsequent incremental recomputations.
-        
-        Raises:
-            TypeError: If called on a Var that is not a constant input (e.g., a formula).
-        """
+        """Updates constant input values. Marks node dirty for incremental recompute."""
         normalized_value = Var._normalize_value(value)
         try:
             self._canvas._graph.update_constant_node(self._node_id, normalized_value)
-        except ValueError as e:
-            # Re-raise with a more user-friendly message
-            raise TypeError(f"Cannot set value for Var '{self.name}'. It may not be a constant input Var.") from e
+        except ValueError:
+            raise TypeError(f"Cannot 'set' Var '{self.name}'. It is a calculated formula.")
+
+    def get_value(self) -> Union[float, List[float]]:
+        """Retrieves current value from the parent Canvas ledger."""
+        return self._canvas.get_value(self)
 
     def trace(self):
-        """
-        Convenience method to trace this Var using its parent Canvas.
-        Equivalent to `canvas.trace(var)`.
-        """
+        """Generates an audit trail of the logic and data contributing to this node."""
         self._canvas.trace(self)
 
-    def _create_binary_op(self, other: 'Var', op_name: str, op_symbol: str) -> 'Var':
-        """Helper method to create a new Var from a binary operation."""
-        if not isinstance(other, Var) or self._canvas is not other._canvas:
-            raise ValueError("Operations are only supported between Vars from the same Canvas.")
+    def _promote(self, other: Any) -> 'Var':
+        """
+        Syntactic Sugar: Promotes Python constants to Var nodes.
+        This allows 'x + 10' to be equivalent to 'x + Var(10)'.
+        """
+        if isinstance(other, Var):
+            return other
+        # Create an internal constant node for the scalar
+        return Var(other, name=f"const({other})")
 
-        new_name = f"({self.name} {op_symbol} {other.name})"
+    def _create_binary_op(self, other: Any, op_name: str, op_symbol: str) -> 'Var':
+        """Helper to register binary arithmetic formulas in the Rust core."""
+        other_var = self._promote(other)
         
+        if self._canvas is not other_var._canvas:
+            raise ValueError("Cross-canvas operations are prohibited.")
+
+        new_name = f"({self.name} {op_symbol} {other_var.name})"
         child_id = self._canvas._graph.add_binary_formula(
             op_name=op_name,
-            parents=[self._node_id, other._node_id],
+            parents=[self._node_id, other_var._node_id],
             name=new_name
         )
-        return Var._from_existing_node(canvas=self._canvas, node_id=child_id, name=new_name)
+        return Var._from_existing_node(self._canvas, child_id, new_name)
 
-    def __add__(self, other: 'Var') -> 'Var':
-        return self._create_binary_op(other, "add", "+")
+    # Arithmetic Operator Overloading
+    def __add__(self, other): return self._create_binary_op(other, "add", "+")
+    def __radd__(self, other): return self._promote(other) + self
 
-    def __sub__(self, other: 'Var') -> 'Var':
-        return self._create_binary_op(other, "subtract", "-")
+    def __sub__(self, other): return self._create_binary_op(other, "subtract", "-")
+    def __rsub__(self, other): return self._promote(other) - self
 
-    def __mul__(self, other: 'Var') -> 'Var':
-        return self._create_binary_op(other, "multiply", "*")
+    def __mul__(self, other): return self._create_binary_op(other, "multiply", "*")
+    def __rmul__(self, other): return self._promote(other) * self
 
-    def __truediv__(self, other: 'Var') -> 'Var':
-        return self._create_binary_op(other, "divide", "/")
+    def __truediv__(self, other): return self._create_binary_op(other, "divide", "/")
+    def __rtruediv__(self, other): return self._promote(other) / self
 
-    def must_equal(self, other: 'Var') -> None:
+    def must_equal(self, other: Any) -> None:
+        """Syntax sugar: delegates constraint registration to the Canvas."""
+        other_var = self._promote(other)
+        self._canvas.must_equal(self, other_var)
+
+    def prev(self, lag: int = 1, *, default: Any) -> 'Var':
         """
-        Declares a constraint that this Var must equal another Var.
-        This is syntactic sugar for `canvas.must_equal(self, other)`.
+        Registers a temporal lookback operation. 
+        'default' is used for periods before the lag horizon.
         """
-        if not isinstance(other, Var) or self._canvas is not other._canvas:
-            raise ValueError("Constraints can only be set between Vars from the same Canvas.")
-        self._canvas.must_equal(self, other)
-
-    def prev(self, lag: int = 1, *, default: 'Var') -> 'Var':
-        if not isinstance(default, Var) or self._canvas is not default._canvas:
-            raise ValueError("Default for .prev() must be a Var from the same Canvas.")
-        if not isinstance(lag, int) or lag < 1:
-            raise ValueError("Lag must be a positive integer.")
+        default_var = self._promote(default)
         new_name = f"{self.name}.prev(lag={lag})"
-        
-        # Note: We use positional arguments here because the Rust argument name 'def'
-        # conflicts with the Python reserved keyword `def`.
-        # Rust signature: (main: usize, def: usize, lag: u32, name: String)
         child_id = self._canvas._graph.add_formula_previous_value(
             self._node_id,
-            default._node_id,
+            default_var._node_id,
             lag,
             new_name
         )
-        return Var._from_existing_node(canvas=self._canvas, node_id=child_id, name=new_name)
+        return Var._from_existing_node(self._canvas, child_id, new_name)
 
     def declare_type(self, *, unit: str = None, temporal_type: str = None) -> 'Var':
-        """
-        Declares the expected type of this Var for static analysis.
-        
-        When `validate()` is called, the type checker will verify that its
-        inferred type for this node matches the type declared here.
-        If a type was already set (e.g., during `add_var`), this method
-        will overwrite it and issue a warning.
-
-        Args:
-            unit: The expected unit (e.g., "USD", "MWh").
-            temporal_type: The expected temporal type ("Stock" or "Flow").
-
-        Returns:
-            The Var instance, allowing for method chaining.
-        """
-        # Rust signature: (id: usize, unit: Option<String>, temporal_type: Option<String>)
-        old_unit, old_temporal_type = self._canvas._graph.set_node_metadata(
+        """Sets metadata for static validation (units, stocks/flows)."""
+        self._canvas._graph.set_node_metadata(
             id=self._node_id,
             unit=unit,
             temporal_type=temporal_type
         )
-        if unit is not None and old_unit is not None and unit != old_unit:
-            warnings.warn(f"Overwriting existing unit '{old_unit}' with '{unit}' for Var '{self.name}'.", UserWarning, stacklevel=2)
-        if temporal_type is not None and old_temporal_type is not None and temporal_type != old_temporal_type:
-             warnings.warn(f"Overwriting existing temporal_type '{old_temporal_type}' with '{temporal_type}' for Var '{self.name}'.", UserWarning, stacklevel=2)
         return self
 
 
 class Canvas:
     """
-    The main container for a financial model's computation graph.
-    Designed to be used as a context manager.
+    The orchestrator for the calculation graph. 
+    Encapsulates topology (the Registry) and state (the Ledger).
     """
 
     def __init__(self):
@@ -203,126 +214,88 @@ class Canvas:
         self._token = None
 
     def solver_var(self, name: str) -> Var:
-        """
-        Adds a new variable to the graph whose value will be determined by the solver.
-        
-        Args:
-            name: A unique, human-readable name for the variable.
-            
-        Returns:
-            A `Var` instance representing the solver variable.
-        """
+        """Adds an unknown variable to be determined by the numerical solver."""
         node_id = self._graph.add_solver_variable(name=name)
         return Var._from_existing_node(canvas=self, node_id=node_id, name=name)
 
     def must_equal(self, var1: Var, var2: Var) -> None:
-        """
-        Declares a constraint that two Vars must be equal. This forms the basis
-        of the system of equations for the solver.
-        """
+        """Registers a simultaneous equation constraint: var1 - var2 = 0."""
         constraint_name = f"Constraint: {var1.name} == {var2.name}"
         self._graph.must_equal(var1._node_id, var2._node_id, name=constraint_name)
     
     def solve(self) -> None:
-        """
-        Solves the system of equations and constraints defined in the graph.
-        
-        This orchestrates the entire process:
-        1. Pre-computes all values that are independent of the solver variables.
-        2. Runs the numerical solver to find the values of the solver variables.
-        3. Runs a final computation pass to calculate all values that depend on the solved variables.
-        
-        The final, complete set of results is stored internally. Use `.get_value(var)` to retrieve them.
-        """
+        """Executes the non-linear solver to resolve circular dependencies."""
         self._last_ledger = self._graph.solve()
 
     def compute_all(self) -> None:
-        """
-        Performs a full computation of all nodes in the graph. This should be
-        called once to establish the initial state of the model before any
-        incremental recomputations.
-        """
-        if self._last_ledger is None:
-            self._last_ledger = _core._Ledger()
-        
-        # The `targets` parameter in the core engine is currently unused but
-        # required by the function signature. We pass all nodes. The engine
-        # will compute everything not already in the ledger.
+        """Performs a full pass of the calculation engine."""
+        self._last_ledger = _core._Ledger()
         all_node_ids = list(range(self._graph.node_count()))
-        self._graph.compute(targets=all_node_ids, ledger=self._last_ledger, changed_inputs=None)
+        self._graph.compute(ledger=self._last_ledger, changed_inputs=None)
 
     def recompute(self, changed_vars: List[Var]) -> None:
-        """
-        Performs an incremental recomputation of the graph based on a list
-        of constant Vars that have been updated via `.set()`.
-
-        Only the provided Vars and their downstream dependencies will be
-        recalculated.
-
-        Args:
-            changed_vars: A list of `Var` objects whose values have changed.
-
-        Raises:
-            RuntimeError: If `.compute_all()` or `.solve()` has not been called first.
-        """
+        """Triggers incremental calculation for a dirty subset of the graph."""
         if self._last_ledger is None:
             raise RuntimeError("Must call .compute_all() or .solve() before recomputing.")
         
         changed_ids = [v._node_id for v in changed_vars]
-        all_node_ids = list(range(self._graph.node_count())) # `targets` is required but unused.
-        self._graph.compute(targets=all_node_ids, ledger=self._last_ledger, changed_inputs=changed_ids)
+        all_node_ids = list(range(self._graph.node_count()))
+        self._graph.compute(ledger=self._last_ledger, changed_inputs=changed_ids)
 
-    def get_value(self, target_var: Var) -> Union[float, List[float]]:
+    def run_batch(
+        self, 
+        scenarios: Dict[str, Dict[Var, Any]], 
+        chunk_size: Optional[int] = None
+    ) -> Dict[str, ScenarioResult]:
         """
-        Retrieves the value of a target Var from the most recent computation.
+        Executes multiple scenarios in parallel.
         
         Args:
-            target_var: The Var whose value you want to retrieve.
-        
-        Returns:
-            The computed value, either as a float (for scalar results) or a list of floats
-            (for time-series results).
-            
-        Raises:
-            RuntimeError: If a computation has not been run yet.
-            ValueError: If the value for the target Var is not found in the results.
+            scenarios: Mapping of scenario names to variable overrides.
+            chunk_size: Max scenarios to process in one parallel burst to manage memory.
         """
+        if not scenarios:
+            return {}
+
+        # Trigger topological sort and bytecode compilation
+        self._graph.topological_order()
+
+        # Map Var objects to logical NodeIds and normalize values
+        prepared_items = []
+        for name, overrides in scenarios.items():
+            node_overrides = {v._node_id: Var._normalize_value(val) for v, val in overrides.items()}
+            prepared_items.append((name, node_overrides))
+
+        all_results = {}
+        batch_limit = chunk_size if chunk_size else len(prepared_items)
+
+        # Process in memory-managed chunks
+        for i in range(0, len(prepared_items), batch_limit):
+            batch_slice = dict(prepared_items[i : i + batch_limit])
+            # Releases GIL: Rust/Rayon takes control here
+            raw_batch_results = self._graph.compute_batch(batch_slice)
+            
+            for name, ledger in raw_batch_results.items():
+                all_results[name] = ScenarioResult(self, ledger)
+
+        return all_results
+
+    def get_value(self, target_var: Var) -> Union[float, List[float]]:
+        """Retrieves values for a Var from the last computed ledger."""
         if self._last_ledger is None:
             raise RuntimeError("Must call .compute_all() or .solve() before requesting a value.")
         
-        # Note: We now call get_value on the Graph, passing the Ledger.
-        # This allows the Graph to map the Logical Node ID to the optimized physical storage index.
         values = self._graph.get_value(self._last_ledger, target_var._node_id)
-        
         if values is None:
-            raise ValueError(f"Value for '{target_var.name}' not found in the ledger.")
+            raise ValueError(f"Value for '{target_var.name}' not found in ledger.")
             
-        # Optimization #1 unified the ledger to vectors (length N).
-        # We need to unwrap this back to float if it is effectively a scalar.
-        
-        # Case 1: The model (or this variable) has length 1. It is structurally a scalar.
-        if len(values) == 1:
+        # Optimization: Return scalar if model length is 1 or node is structurally constant
+        if len(values) == 1 or self._graph.is_scalar(target_var._node_id):
             return values[0]
-
-        # Case 2: The model is a time-series (len > 1), but this variable is a constant scalar
-        # that was broadcasted (e.g., "Tax Rate"). We check the structural type in Rust.
-        if self._graph.is_scalar(target_var._node_id):
-            return values[0]
-            
-        # Case 3: It is a true time-series.
         return values
 
     def trace(self, target_var: Var):
-        """
-        Generates and prints a step-by-step audit trace for a given Var,
-        showing how it was derived from its ultimate inputs.
-
-        Args:
-            target_var: The Var to trace.
-        
-        Raises:
-            RuntimeError: If a computation has not been run yet.
-        """
+        """Prints the recursive audit trace for the specified variable."""
         if self._last_ledger is None:
             raise RuntimeError("Must call .compute_all() or .solve() before tracing.")
         
@@ -330,11 +303,14 @@ class Canvas:
         print(trace_output)
 
     def validate(self) -> None:
+        """Performs static analysis to detect unit mismatches or logical errors."""
         self._graph.validate()
 
     def get_evaluation_order(self) -> List[int]:
+        """Returns the topological execution sequence of the graph."""
         return self._graph.topological_order()
 
     @property
     def node_count(self) -> int:
+        """Total number of nodes currently in the Registry."""
         return self._graph.node_count()
