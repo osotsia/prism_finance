@@ -73,7 +73,7 @@ def print_sobol_table(var_names: List[str], indices: List[Dict[str, float]]):
     # Combine and sort by Total Effect (ST) descending
     data = sorted(zip(var_names, indices), key=lambda x: x[1]['ST'], reverse=True)
     
-    print(f"\n{Colors.BOLD}{'PRISM GLOBAL SENSITIVITY REPORT':^85}{Colors.END}")
+    print(f"\n{Colors.BOLD}{'GLOBAL SENSITIVITY REPORT':^85}{Colors.END}")
     header = f"{'Variable':<20} | {'S1 (Direct)':<25} | {'ST (Total)':<25} | {'Interactivity'}"
     print(f"{Colors.BOLD}{header}{Colors.END}")
     print(f"{Colors.DIM}{'-' * 95}{Colors.END}")
@@ -110,7 +110,7 @@ def print_sobol_table(var_names: List[str], indices: List[Dict[str, float]]):
     print(f"\n{Colors.DIM}Legend: {Colors.GREEN}█ S1{Colors.END} | {Colors.BLUE}█ ST{Colors.END} | {Colors.CYAN}% Interaction (ST-S1){Colors.END}")
 
 def run_sensitivity_demo():
-    MONTHS, N = 120, 5000
+    MONTHS, N_SAMPLES, CHUNK_SIZE = 120, 500000, 100000
     print(f"--- Prism Stress Test: {MONTHS}-Month Portfolio ---")
     
     with Canvas() as model:
@@ -144,18 +144,28 @@ def run_sensitivity_demo():
             bounds[v] = (base * 0.8, base * 1.2)
 
         print(f"Generating Saltelli sequence for {len(bounds)} variables...")
-        scenarios = list(SobolAnalyzer.generate_saltelli_scenarios(bounds, N))
+        scenarios = list(SobolAnalyzer.generate_saltelli_scenarios(bounds, N_SAMPLES))
+        total_runs = len(scenarios)
         s_map = {f"S_{i:06}": s for i, s in enumerate(scenarios)}
         
-        print(f"Evaluating {len(s_map):,} scenarios...")
+        # 3. Output Accumulator (Scalars only - Low memory footprint)
+        ordered_outputs = [0.0] * total_runs
+
+        print(f"Evaluating {total_runs:,} scenarios in chunks of {CHUNK_SIZE}...")
         start = time.perf_counter()
-        results = model.run_batch(s_map, chunk_size=5000)
+
+        # run_batch is now a generator yielding (name, ScenarioResult)
+        # As we move to the next iteration, the previous 'res' object is eligible for GC.
+        for name, res in model.run_batch(s_map, chunk_size=CHUNK_SIZE):
+            # Parse index from name (e.g., 'S_0000042' -> 42)
+            idx = int(name.split("_")[1])
+            # Extract only the final time-step of the objective variable
+            ordered_outputs[idx] = res.get(terminal_value)[-1]
+
         dur = time.perf_counter() - start
         print(f"Parallel Execution: {dur:.4f}s ({len(s_map)/dur:,.0f} scenarios/sec)")
 
-        # Extract terminal value (last month of cumulative income)
-        ordered_y = [results[f"S_{i:06}"].get(terminal_value)[-1] for i in range(len(s_map))]
-        indices = SobolAnalyzer.compute_indices(ordered_y, N, len(v_list))
+        indices = SobolAnalyzer.compute_indices(ordered_outputs, N_SAMPLES, len(v_list))
         
         print_sobol_table([v.name for v in v_list], indices)
 

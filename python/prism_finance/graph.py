@@ -243,42 +243,40 @@ class Canvas:
         self._graph.compute(ledger=self._last_ledger, changed_inputs=changed_ids)
 
     def run_batch(
-        self, 
-        scenarios: Dict[str, Dict[Var, Any]], 
-        chunk_size: Optional[int] = None
-    ) -> Dict[str, ScenarioResult]:
-        """
-        Executes multiple scenarios in parallel.
-        
-        Args:
-            scenarios: Mapping of scenario names to variable overrides.
-            chunk_size: Max scenarios to process in one parallel burst to manage memory.
-        """
-        if not scenarios:
-            return {}
+            self, 
+            scenarios: Dict[str, Dict[Var, Any]], 
+            chunk_size: Optional[int] = None
+        ): # Removed Dict return type hint to support Generator
+            """
+            Executes multiple scenarios in parallel using a generator to manage memory.
+            Yields: (scenario_name, ScenarioResult)
+            """
+            if not scenarios:
+                return
 
-        # Trigger topological sort and bytecode compilation
-        self._graph.topological_order()
+            self._graph.topological_order()
 
-        # Map Var objects to logical NodeIds and normalize values
-        prepared_items = []
-        for name, overrides in scenarios.items():
-            node_overrides = {v._node_id: Var._normalize_value(val) for v, val in overrides.items()}
-            prepared_items.append((name, node_overrides))
+            from .graph import Var
+            items = list(scenarios.items())
+            batch_limit = chunk_size if chunk_size else len(items)
 
-        all_results = {}
-        batch_limit = chunk_size if chunk_size else len(prepared_items)
+            for i in range(0, len(items), batch_limit):
+                # 1. Prepare only the current chunk
+                chunk_slice = items[i : i + batch_limit]
+                prepared_chunk = {
+                    name: {v._node_id: Var._normalize_value(val) for v, val in overrides.items()}
+                    for name, overrides in chunk_slice
+                }
 
-        # Process in memory-managed chunks
-        for i in range(0, len(prepared_items), batch_limit):
-            batch_slice = dict(prepared_items[i : i + batch_limit])
-            # Releases GIL: Rust/Rayon takes control here
-            raw_batch_results = self._graph.compute_batch(batch_slice)
-            
-            for name, ledger in raw_batch_results.items():
-                all_results[name] = ScenarioResult(self, ledger)
-
-        return all_results
+                # 2. Compute the chunk in Rust
+                raw_batch_results = self._graph.compute_batch(prepared_chunk)
+                
+                # 3. Yield results one by one
+                for name, ledger in raw_batch_results.items():
+                    yield name, ScenarioResult(self, ledger)
+                
+                # 4. Explicitly clear the raw results to help GC
+                raw_batch_results.clear()
 
     def get_value(self, target_var: Var) -> Union[float, List[float]]:
         """Retrieves values for a Var from the last computed ledger."""
