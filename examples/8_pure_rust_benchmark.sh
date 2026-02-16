@@ -2,7 +2,7 @@
 
 # Configuration
 ITERATIONS=150
-BENCH_SCRIPT="examples/benchmark.py"
+BENCH_SCRIPT="examples/single_benchmark.py"
 TEMP_FILE="bench_results.tmp"
 
 # Ensure clean start

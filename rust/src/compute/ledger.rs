@@ -1,6 +1,7 @@
 use thiserror::Error;
+use serde::{Serialize, Deserialize}; // Added Serde support to Ledger too
 
-#[derive(Error, Debug, Clone, PartialEq)]
+#[derive(Error, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ComputationError {
     #[error("Math error: {0}")]
     MathError(String),
@@ -12,7 +13,7 @@ pub enum ComputationError {
     CycleDetected,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SolverIteration {
     pub iter_count: i32,
     pub obj_value: f64,
@@ -20,7 +21,7 @@ pub struct SolverIteration {
     pub inf_du: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ledger {
     data: Vec<f64>,
     model_len: usize,
@@ -88,6 +89,12 @@ impl Ledger {
     #[inline(always)]
     pub fn raw_data_mut(&mut self) -> *mut f64 {
         self.data.as_mut_ptr()
+    }
+
+    // ADDED: Helper for safety assertions
+    #[inline(always)]
+    pub fn raw_data_len(&self) -> usize {
+        self.data.len()
     }
 
     #[inline(always)]

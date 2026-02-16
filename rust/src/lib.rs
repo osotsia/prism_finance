@@ -15,10 +15,11 @@ fn rust_core_version() -> &'static str {
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rust_core_version, m)?)?;
-    // Register the benchmark function
+
     m.add_function(wrap_pyfunction!(bindings::python::benchmark_pure_rust, m)?)?;
     
     m.add_class::<bindings::python::PyComputationGraph>()?;
     m.add_class::<bindings::python::PyLedger>()?;
+    m.add_class::<bindings::python::PySolverConfig>()?;
     Ok(())
 }

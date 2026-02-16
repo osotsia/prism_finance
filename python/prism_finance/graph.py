@@ -27,7 +27,8 @@ def get_active_canvas() -> 'Canvas':
         return _active_canvas.get()
     except LookupError:
         raise RuntimeError(
-            "Prism variables (Var) must be created within a 'with Canvas():' block."
+            "Prism variables (Var) must be created within a 'with Canvas():' block. "
+            "Ensure you have initialized a context manager."
         )
 
 
@@ -89,6 +90,7 @@ class Var:
             unit=unit,
             temporal_type=temporal_type
         )
+        # Note: Name uniqueness is now handled by Rust backend (auto-suffixing)
 
     @classmethod
     def _from_existing_node(cls, canvas: 'Canvas', node_id: int, name: str) -> 'Var':
@@ -213,6 +215,16 @@ class Canvas:
         _active_canvas.reset(self._token)
         self._token = None
 
+    def __getstate__(self):
+        # We only need to serialize the graph. Token and last_ledger are transient.
+        return {'graph': self._graph}
+
+    def __setstate__(self, state):
+        self._graph = state['graph']
+        self._token = None
+        self._last_ledger = None
+    # ----------------------
+
     def solver_var(self, name: str) -> Var:
         """Adds an unknown variable to be determined by the numerical solver."""
         node_id = self._graph.add_solver_variable(name=name)
@@ -223,14 +235,20 @@ class Canvas:
         constraint_name = f"Constraint: {var1.name} == {var2.name}"
         self._graph.must_equal(var1._node_id, var2._node_id, name=constraint_name)
     
-    def solve(self) -> None:
-        """Executes the non-linear solver to resolve circular dependencies."""
-        self._last_ledger = self._graph.solve()
+    def solve(self, tol: float = 1e-9, max_iter: int = 3000) -> None:
+        """
+        Executes the non-linear solver.
+        
+        Args:
+            tol: Convergence tolerance for the solver.
+            max_iter: Maximum number of iterations before stopping.
+        """
+        config = _core.PySolverConfig(tol=tol, max_iter=max_iter)
+        self._last_ledger = self._graph.solve(config)
 
     def compute_all(self) -> None:
         """Performs a full pass of the calculation engine."""
         self._last_ledger = _core._Ledger()
-        all_node_ids = list(range(self._graph.node_count()))
         self._graph.compute(ledger=self._last_ledger, changed_inputs=None)
 
     def recompute(self, changed_vars: List[Var]) -> None:
@@ -239,7 +257,6 @@ class Canvas:
             raise RuntimeError("Must call .compute_all() or .solve() before recomputing.")
         
         changed_ids = [v._node_id for v in changed_vars]
-        all_node_ids = list(range(self._graph.node_count()))
         self._graph.compute(ledger=self._last_ledger, changed_inputs=changed_ids)
 
     def run_batch(

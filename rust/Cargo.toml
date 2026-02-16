@@ -26,6 +26,10 @@ wide = "0.7"
 # For IPOPT FFI
 libc = "0.2"
 
+# Added for Serialization Support (Pickle/JSON)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
 [dev-dependencies]
 rstest = "0.21.0"
 

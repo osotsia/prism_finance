@@ -1,6 +1,8 @@
 use super::types::*;
+use serde::{Serialize, Deserialize};
+use std::collections::HashSet;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Registry {
     // Columnar Arrays
     pub kinds: Vec<NodeKind>,
@@ -17,16 +19,38 @@ pub struct Registry {
 
     // Data Blobs
     pub constants_data: Vec<Vec<f64>>,
+
+    // Ephemeral state for uniqueness checks (Not serialized, rebuilt on load)
+    #[serde(skip)]
+    pub used_names: HashSet<String>,
 }
 
 impl Registry {
     pub fn new() -> Self { Self::default() }
     pub fn count(&self) -> usize { self.kinds.len() }
 
-    pub fn add_node(&mut self, kind: NodeKind, parents: &[NodeId], meta: NodeMetadata) -> NodeId {
+    /// Rebuilds the `used_names` set after deserialization.
+    pub fn rebuild_name_cache(&mut self) {
+        self.used_names = self.meta.iter().map(|m| m.name.clone()).collect();
+    }
+
+    pub fn add_node(&mut self, kind: NodeKind, parents: &[NodeId], mut meta: NodeMetadata) -> NodeId {
         let id = NodeId(self.kinds.len() as u32);
 
-        // 1. Register Parents (for upstream lookups)
+        // --- Unique Name Enforcement ---
+        let original_name = meta.name.clone();
+        let mut candidate_name = original_name.clone();
+        let mut counter = 1;
+
+        while self.used_names.contains(&candidate_name) {
+            candidate_name = format!("{}_{}", original_name, counter);
+            counter += 1;
+        }
+        self.used_names.insert(candidate_name.clone());
+        meta.name = candidate_name;
+        // -------------------------------
+
+        // 1. Register Parents
         let start = self.parents_flat.len() as u32;
         let count = parents.len() as u32;
         self.parents_flat.extend_from_slice(parents);

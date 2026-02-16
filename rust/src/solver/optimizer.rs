@@ -7,6 +7,18 @@ use std::sync::Mutex;
 use std::ffi::c_void;
 use libc::c_int;
 
+#[derive(Debug, Clone, Copy)]
+pub struct SolverConfig {
+    pub tol: f64,
+    pub max_iter: i32,
+}
+
+impl Default for SolverConfig {
+    fn default() -> Self {
+        Self { tol: 1e-9, max_iter: 3000 }
+    }
+}
+
 pub fn solve(
     registry: &Registry, 
     program: &Program,
@@ -14,6 +26,7 @@ pub fn solve(
     residuals: Vec<NodeId>,
     base_ledger: Ledger,
     model_len: usize,
+    config: SolverConfig, 
 ) -> Result<Ledger, ComputationError> {
     
     let problem = PrismProblem {
@@ -59,8 +72,11 @@ pub fn solve(
     }
 
     unsafe {
+        // Apply Configuration
         ipopt_ffi::AddIpoptIntOption(ipopt_prob, "print_level\0".as_ptr() as *const i8, 0);
-        ipopt_ffi::AddIpoptNumOption(ipopt_prob, "tol\0".as_ptr() as *const i8, 1e-9);
+        ipopt_ffi::AddIpoptNumOption(ipopt_prob, "tol\0".as_ptr() as *const i8, config.tol);
+        ipopt_ffi::AddIpoptIntOption(ipopt_prob, "max_iter\0".as_ptr() as *const i8, config.max_iter);
+        
         ipopt_ffi::SetIntermediateCallback(ipopt_prob, Some(ipopt_adapter::intermediate_callback));
         
         ipopt_ffi::IpoptSolve(
