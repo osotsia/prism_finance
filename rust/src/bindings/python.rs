@@ -11,7 +11,9 @@ use std::time::Instant;
 use rayon::prelude::*;
 use std::collections::HashMap;
 
-#[pyclass]
+// --- Fix: Added module declaration to pyclass macros ---
+
+#[pyclass(module = "prism_finance._core")]
 #[derive(Clone)]
 pub struct PySolverConfig {
     #[pyo3(get, set)]
@@ -37,7 +39,7 @@ impl From<PySolverConfig> for SolverConfig {
     }
 }
 
-#[pyclass(name = "_Ledger")]
+#[pyclass(name = "_Ledger", module = "prism_finance._core")]
 #[derive(Debug, Clone, Default)]
 pub struct PyLedger {
     pub inner: Ledger,
@@ -49,7 +51,7 @@ impl PyLedger {
     pub fn new() -> Self { Self::default() }
 }
 
-#[pyclass(name = "_ComputationGraph")]
+#[pyclass(name = "_ComputationGraph", module = "prism_finance._core")]
 pub struct PyComputationGraph {
     registry: Registry,
     constraints: Vec<(NodeId, String)>,
