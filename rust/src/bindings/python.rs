@@ -5,7 +5,7 @@ use crate::display::trace;
 use crate::solver::optimizer::{self, SolverConfig};
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyValueError, PyRuntimeError};
-use pyo3::types::{PyBytes, PyTuple};
+use pyo3::types::{PyBytes};
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -136,27 +136,46 @@ impl PyComputationGraph {
         } 
     }
 
-    // --- Serialization Support (Pickle) ---
+    // --- Serialization Support (Pickle/JSON) ---
+    
     pub fn __getstate__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let json_str = serde_json::to_string(&self.registry)
+        // We serialize a tuple: (Registry, Constraints).
+        // The Program (bytecode) is a derived artifact (cache) and is discarded.
+        let state = (&self.registry, &self.constraints);
+        
+        let json_str = serde_json::to_string(&state)
             .map_err(|e| PyRuntimeError::new_err(format!("Serialization failed: {}", e)))?;
+            
         Ok(PyBytes::new(py, json_str.as_bytes()))
     }
 
     pub fn __setstate__(&mut self, state: &Bound<'_, PyBytes>) -> PyResult<()> {
         let bytes = state.as_bytes();
-        let mut registry: Registry = serde_json::from_slice(bytes)
+        
+        // Deserialize the tuple (Registry, Constraints)
+        let (mut registry, constraints): (Registry, Vec<(NodeId, String)>) = 
+            serde_json::from_slice(bytes)
             .map_err(|e| PyRuntimeError::new_err(format!("Deserialization failed: {}", e)))?;
         
-        // Critical: Rebuild ephemeral state
+        // 1. Rebuild ephemeral state in Registry (used_names HashSet)
         registry.rebuild_name_cache();
         
+        // 2. Validate Constraints Integrity
+        // Ensures that loaded constraints reference valid nodes in the loaded registry.
+        let count = registry.count();
+        for (id, name) in &constraints {
+            if id.index() >= count {
+                return Err(PyRuntimeError::new_err(
+                    format!("Corrupt state: Constraint '{}' references non-existent NodeId {}", name, id.index())
+                ));
+            }
+        }
+
+        // 3. Restore State
         self.registry = registry;
-        self.constraints.clear(); // Constraints need re-registration or serialize them too? 
-        // NOTE: Constraints are currently just ID+Name. We should serialize them too strictly speaking, 
-        // but for now let's assume valid state reconstruction requires just Registry.
-        // Actually, if we lose constraints, solve() breaks. Let's fix this in a real scenario by serializing struct.
-        // For this refactor, we stick to minimal changes. 
+        self.constraints = constraints;
+        
+        // 4. Reset Cache to force recompilation on next compute/solve
         self.invalidate_cache();
         Ok(())
     }
