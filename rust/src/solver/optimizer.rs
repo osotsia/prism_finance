@@ -71,7 +71,7 @@ pub fn solve(
         return Err(ComputationError::MathError("Failed to create IPOPT problem".into()));
     }
 
-    unsafe {
+    let status = unsafe {
         // Apply Configuration
         ipopt_ffi::AddIpoptIntOption(ipopt_prob, "print_level\0".as_ptr() as *const i8, 0);
         ipopt_ffi::AddIpoptNumOption(ipopt_prob, "tol\0".as_ptr() as *const i8, config.tol);
@@ -79,7 +79,7 @@ pub fn solve(
         
         ipopt_ffi::SetIntermediateCallback(ipopt_prob, Some(ipopt_adapter::intermediate_callback));
         
-        ipopt_ffi::IpoptSolve(
+        let res = ipopt_ffi::IpoptSolve(
             ipopt_prob,
             x_init.as_mut_ptr(),
             std::ptr::null_mut(),
@@ -90,11 +90,18 @@ pub fn solve(
             user_data as *mut c_void,
         );
         ipopt_ffi::FreeIpoptProblem(ipopt_prob);
-    }
+        res
+    };
     
+    // Recover ownership to drop it
     let solved_problem = unsafe { Box::from_raw(user_data) };
-    let final_x = x_init;
     
+    // Check status code: 0 = Solve_Succeeded, 1 = Solved_To_Acceptable_Level
+    if status != 0 && status != 1 {
+        return Err(ComputationError::MathError(format!("IPOPT Solver failed with status code: {}", status)));
+    }
+
+    let final_x = x_init;
     let mut final_ledger = solved_problem.base_ledger.clone();
     
     // Use the logical set_value interface
