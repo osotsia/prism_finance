@@ -16,7 +16,7 @@ jobs:
   # ====================================================================
   test_and_lint:
     name: Test & Lint
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -26,8 +26,7 @@ jobs:
 
       - name: Install System Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y coinor-libipopt-dev liblapack-dev libblas-dev
+          brew install ipopt
 
       - name: Install Python dependencies and build for testing
         run: |
@@ -53,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-latest]
+        os: [macos-14]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
@@ -147,7 +146,7 @@ jobs:
   build_sdist:
     name: Build source distribution
     needs: test_and_lint
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
@@ -170,7 +169,7 @@ jobs:
     name: Publish to PyPI
     needs: [build_wheels, build_sdist]
     if: github.event_name == 'release' && github.event.action == 'published'
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     environment:
       name: pypi
       url: https://pypi.org/p/prism-finance
