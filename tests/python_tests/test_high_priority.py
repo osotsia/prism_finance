@@ -349,3 +349,24 @@ def test_cash_flow_sweep_correctness():
             expected_ni_y2,
             "Year 2 Net Income failed. Time-series roll-forward likely broken."
         )
+
+
+def test_solver_infeasibility_handling():
+    """
+    Verifies that the engine raises a clean RuntimeError when the solver
+    cannot find a solution (e.g., x = x + 1).
+    """
+    with Canvas() as model:
+        x = model.solver_var(name="x")
+        
+        # Impossible constraint: x = x + 10
+        # Residual: 0 = 10 (Impossible)
+        x.must_equal(x + 10.0)
+        
+        # IPOPT should return status 2 (Infeasible_Problem_Detected) or similar.
+        # The Rust engine maps this to a ComputationError, which becomes a RuntimeError in Python.
+        with pytest.raises(RuntimeError) as exc_info:
+            model.solve()
+        
+        # Verify the message contains useful info
+        assert "IPOPT Solver failed" in str(exc_info.value)
