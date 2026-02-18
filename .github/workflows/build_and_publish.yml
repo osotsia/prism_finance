@@ -29,7 +29,7 @@ jobs:
 
       - name: Install Python dependencies and build for testing
         run: |
-          pip install pytest maturin
+          pip install pytest maturin hypothesis
           # Build wheel with default features (extension-module enabled)
           maturin build --out dist
           pip install dist/*.whl
@@ -72,7 +72,7 @@ jobs:
 
       # This step prepares the environment for testing the wheel.
       - name: Install dependencies for testing the wheel
-        run: pip install pytest
+        run: pip install pytest hypothesis
 
       - name: Install and test wheel
         run: |

@@ -21,6 +21,7 @@ export LC_NUMERIC=en_US.UTF-8
 
 for ((i=1; i<=ITERATIONS; i++)); do
     # Extract numeric throughput value and strip commas
+    # Example output line: "Throughput (Full):         145,200 nodes/sec"
     RESULT=$(python "$BENCH_SCRIPT" 2>/dev/null | grep "Throughput (Full):" | awk '{print $3}' | tr -d ',')
     
     if [[ -n "$RESULT" ]]; then
@@ -32,17 +33,43 @@ for ((i=1; i<=ITERATIONS; i++)); do
     fi
 done
 
-# Calculate statistics
+# Calculate statistics using Python for floating point precision
 if [[ -s "$TEMP_FILE" ]]; then
-    # Use printf within awk to prevent scientific notation (e.g., 1.25e+08)
-    MEAN=$(awk '{ sum += $1; count++ } END { if (count > 0) printf "%.0f", sum / count }' "$TEMP_FILE")
-    COUNT=$(wc -l < "$TEMP_FILE")
+    echo "--------------------------------------------------"
+    echo "Benchmark Summary (N=$ITERATIONS)"
+    echo "--------------------------------------------------"
     
-    echo "--------------------------------------------------"
-    echo "Benchmark Summary"
-    echo "--------------------------------------------------"
-    echo "Successful runs: $COUNT / $ITERATIONS"
-    printf "Mean Throughput: %'d nodes/sec\n" "$MEAN"
+    python3 -c "
+import math
+
+# Load data
+with open('$TEMP_FILE', 'r') as f:
+    data = [float(line.strip()) for line in f if line.strip()]
+
+n = len(data)
+if n > 1:
+    mean = sum(data) / n
+    
+    # Calculate Sample Standard Deviation
+    variance = sum((x - mean) ** 2 for x in data) / (n - 1)
+    std_dev = math.sqrt(variance)
+    
+    # Calculate Standard Error (SE)
+    std_error = std_dev / math.sqrt(n)
+    
+    # Calculate 95% Confidence Interval (Z=1.96)
+    margin_of_error = 1.96 * std_error
+    
+    # Scale to Millions
+    mean_m = mean / 1_000_000.0
+    moe_m = margin_of_error / 1_000_000.0
+    
+    print(f'Mean Throughput: {mean_m:.1f} ± {moe_m:.1f} million nodes/sec (95% CI)')
+    # print(f'Standard Error:  {std_error:,.0f} nodes/sec')
+    # print(f'Min / Max:       {min(data):,.0f} / {max(data):,.0f}')
+else:
+    print('Insufficient data for statistics.')
+"
 else
     echo "No valid results collected."
 fi

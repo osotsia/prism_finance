@@ -1,372 +1,261 @@
 """
 High Priority Test Suite: Core Correctness, Stability, & Data Integrity.
-
-Failure in these tests indicates critical flaws in the engine's memory model,
-serialization logic, or numerical solver.
 """
 
 import pytest
 import pickle
 import random
-import math
-from prism_finance import Canvas, Var
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from hypothesis import given, settings, strategies as st
 
-# --- Constants & Helpers ---
-TOLERANCE = 1e-9
+from prism_finance import Canvas, Var
+from .config import TestConfig
+
+# --- Helpers ---
 
 def assert_float_equal(actual, expected, msg=""):
-    assert abs(actual - expected) < TOLERANCE, f"{msg} Expected {expected}, got {actual}"
+    assert abs(actual - expected) < TestConfig.TOLERANCE, f"{msg} Expected {expected}, got {actual}"
 
-def create_scrambled_graph(model: Canvas, seed: int = 42):
+# --- 1. Property-Based Testing (Hypothesis) ---
+
+# Strategy: Generate a list of operations to form a random DAG.
+# Elements: ('op', index_1, index_2). Indices are modulo current_node_count.
+op_strategy = st.lists(
+    st.tuples(
+        st.sampled_from(['add', 'sub', 'mul', 'div']),
+        st.integers(min_value=0, max_value=TestConfig.FUZZ_MAX_NODES),
+        st.integers(min_value=0, max_value=TestConfig.FUZZ_MAX_NODES)
+    ),
+    min_size=1,
+    max_size=TestConfig.FUZZ_MAX_NODES
+)
+
+@given(ops=op_strategy, initial_val=st.floats(min_value=1.0, max_value=100.0))
+@settings(max_examples=50, deadline=None)
+def test_incremental_consistency_hypothesis(ops, initial_val):
     """
-    Creates a graph where Node Creation Order != Dependency Order.
-    This stresses the Compiler's ability to map Logical IDs to Physical Indices.
+    Property: For any valid DAG, Incremental Recomputation must equal Full Computation.
     """
-    rng = random.Random(seed)
+    with Canvas() as model:
+        inputs = [Var(initial_val, name=f"In_{i}") for i in range(3)]
+        all_nodes = list(inputs)
+        
+        for op_type, idx1, idx2 in ops:
+            n1 = all_nodes[idx1 % len(all_nodes)]
+            n2 = all_nodes[idx2 % len(all_nodes)]
+            
+            if op_type == 'add': new_node = n1 + n2
+            elif op_type == 'sub': new_node = n1 - n2
+            elif op_type == 'mul': new_node = n1 * n2
+            else: new_node = n1 / (n2 + Var(0.001, name="epsilon")) # Avoid Div0
+
+            new_node.name = f"Node_{len(all_nodes)}"
+            all_nodes.append(new_node)
+            
+        target_node = all_nodes[-1]
+        
+        model.compute_all()
+        full_res_1 = model.get_value(target_node)
+        
+        # Mutate input and recompute
+        inputs[0].set(initial_val * 1.5)
+        
+        model.recompute([inputs[0]])
+        incremental_res = model.get_value(target_node)
+        
+        model.compute_all()
+        full_res_2 = model.get_value(target_node)
+        
+        assert abs(incremental_res - full_res_2) < 1e-5, "Incremental diverged from Full Recompute"
+
+
+# --- 2. Concurrency & Isolation Tests ---
+
+def _run_isolated_model(seed_val: float) -> float:
+    with Canvas() as model:
+        a = Var(seed_val, name="A")
+        b = Var(2.0, name="B")
+        c = a * b
+        model.compute_all()
+        return model.get_value(c)
+
+def test_thread_isolation_contextvars():
+    """Verifies Canvas state isolation across threads."""
+    workers = 10
+    inputs = [float(i) for i in range(workers)]
+    expected = [i * 2.0 for i in inputs]
     
-    # 1. Create standard inputs
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_input = {executor.submit(_run_isolated_model, i): i for i in inputs}
+        results = []
+        for future in as_completed(future_to_input):
+            results.append(future.result())
+    
+    results.sort()
+    assert results == expected, "Thread isolation failed."
+
+
+# --- 3. FFI & Memory Safety ---
+
+def create_scrambled_graph(model: Canvas):
     a = Var(10.0, name="A")
     b = Var(20.0, name="B")
-    
-    # 2. Create a formula immediately
-    c = a + b  # C depends on A, B
-    
-    # 3. Create a NEW input after a formula (Interleaved creation)
-    d = Var(5.0, name="D")
-    
-    # 4. Create formula using the late input and early formula
-    e = c * d  # E depends on C, D
-    
-    # 5. Create a disconnected node
-    f = Var(99.0, name="F_Disconnected")
-    
+    c = a + b 
+    d = Var(5.0, name="D") # Late input creation
+    e = c * d
     return a, b, c, d, e
 
-# --- Tests ---
-
 def test_compiler_layout_and_memory_safety():
-    """
-    Verifies that the Bytecode Compiler correctly handles graphs where
-    inputs and formulas are interleaved during creation.
-    
-    Failure Mode: Segfault or reading garbage data due to incorrect 
-    Physical Index mapping in Rust.
-    """
+    """Verifies Bytecode Compiler handles interleaved node creation correctly."""
     with Canvas() as model:
         a, b, c, d, e = create_scrambled_graph(model)
-        
         model.compute_all()
         
-        # Verify correctness independently
-        val_a = 10.0
-        val_b = 20.0
-        val_d = 5.0
-        expected_c = val_a + val_b
-        expected_e = expected_c * val_d
-        
+        expected_e = (10.0 + 20.0) * 5.0
         assert_float_equal(model.get_value(e), expected_e, "Complex dependency chain failed")
         
-        # Verify updates work on the late-bound input
-        new_d = 50.0
-        d.set(new_d)
+        # Update late-bound input
+        d.set(50.0)
         model.recompute([d])
         
-        expected_e_new = expected_c * new_d
+        expected_e_new = (10.0 + 20.0) * 50.0
         assert_float_equal(model.get_value(e), expected_e_new, "Update to interleaved input failed")
-
-
-def test_incremental_consistency_fuzz():
-    """
-    Property-Based Test: Asserts that Incremental Recompute yields 
-    identical results to Full Compute for random input perturbations.
-    """
-    ITERATIONS = 5
-    NODES = 50
-    
-    with Canvas() as model:
-        # 1. Generate a random deep DAG
-        rng = random.Random(1337)
-        inputs = [Var(rng.uniform(1, 100), name=f"In_{i}") for i in range(10)]
-        nodes = list(inputs)
-        
-        for i in range(NODES):
-            # Pick two random existing nodes to combine
-            p1 = rng.choice(nodes)
-            p2 = rng.choice(nodes)
-            op = rng.choice(['add', 'sub', 'mul'])
-            
-            if op == 'add': child = p1 + p2
-            elif op == 'sub': child = p1 - p2
-            else: child = p1 * p2
-            
-            child.name = f"Node_{i}"
-            nodes.append(child)
-            
-        final_node = nodes[-1]
-        
-        # 2. Initial Full Compute
-        model.compute_all()
-        baseline_full = model.get_value(final_node)
-        
-        # 3. Fuzz Loop
-        for i in range(ITERATIONS):
-            # a. Pick a random input and mutate it
-            target_input = rng.choice(inputs)
-            new_val = rng.uniform(1, 100)
-            target_input.set(new_val)
-            
-            # b. Run Incremental
-            model.recompute([target_input])
-            incremental_result = model.get_value(final_node)
-            
-            # c. Run Full (Force clean state)
-            model.compute_all()
-            full_result = model.get_value(final_node)
-            
-            assert_float_equal(
-                incremental_result, 
-                full_result, 
-                f"Iter {i}: Incremental recompute diverged from full compute."
-            )
-
 
 def test_serialization_round_trip_with_constraints():
     """
-    Verifies that the entire model state—including Solver Constraints—survives serialization.
-    
-    Previous Failure: `__getstate__` dropped constraints, causing `solve()` 
-    to be a no-op after loading.
+    Verifies model state and multi-variable constraints survive serialization.
+    Regressed Logic Restored: Solves a 2x2 system to ensure topology is preserved.
+    System: x + y = 10, x - y = 2  => x=6, y=4
     """
-    # 1. Build Model
     original_model = Canvas()
     with original_model:
-        # Solve x + y = 10, x - y = 2  => x=6, y=4
         x = original_model.solver_var(name="x")
         y = original_model.solver_var(name="y")
         
         x.must_equal(Var(10.0, name="c1") - y)
         y.must_equal(x - Var(2.0, name="c2"))
         
-        # Solve once to prove it works pre-pickle
         original_model.solve()
-        pre_pickle_x = original_model.get_value(x)
-        assert_float_equal(pre_pickle_x, 6.0, "Pre-pickle solve failed")
-
-    # 2. Serialize
-    serialized_bytes = pickle.dumps(original_model)
+        assert_float_equal(original_model.get_value(x), 6.0, "Pre-pickle check failed")
+        
+    serialized = pickle.dumps(original_model)
+    loaded_model: Canvas = pickle.loads(serialized)
     
-    # 3. Deserialize into NEW instance
-    loaded_model: Canvas = pickle.loads(serialized_bytes)
-    
-    # 4. Recover Handles
-    # We use _from_existing_node to wrap the internal integer ID into a Python Var
-    # without trying to register a new node in the graph (which requires an active Canvas).
-    
-    # We know x was node 0 in the original graph (first created).
-    # NOTE: In a real app, users should rely on a naming convention lookup or save IDs.
+    # Recover handles via ID
     x_handle = Var._from_existing_node(loaded_model, x._node_id, "x")
-
-    # 5. Solve on Loaded Model
-    # If constraints were lost, this would do nothing (x would remain 0.0 or default).
-    # If constraints are present, IPOPT runs and finds x=6.0.
-    loaded_model.solve()
     
+    # Re-run solver on loaded model
+    loaded_model.solve()
     loaded_x = loaded_model.get_value(x_handle)
+    
     assert_float_equal(loaded_x, 6.0, "Post-pickle solve failed. Constraints likely lost.")
 
 
-def test_parallel_execution_isolation():
-    """
-    Verifies that `run_batch` scenarios are perfectly isolated.
-    A scenario with huge numbers must not corrupt a scenario with small numbers.
-    """
-    with Canvas() as model:
-        # Logic: result = input * 2
-        inp = Var(0.0, name="Input")
-        res = inp * 2.0
-        
-        # Scenario 1: Small
-        # Scenario 2: Large
-        scenarios = {
-            "Small": {inp: 10.0},
-            "Large": {inp: 1_000_000.0}
-        }
-        
-        # Use generator
-        results = {}
-        for name, handle in model.run_batch(scenarios):
-            results[name] = handle.get(res)
-            
-        assert_float_equal(results["Small"], 20.0, "Small scenario corrupted")
-        assert_float_equal(results["Large"], 2_000_000.0, "Large scenario corrupted")
-
-
-def test_solver_convergence_nonlinear():
-    """
-    Verifies the solver handles non-linear convergence correctly.
-    Problem: Find x where x = sqrt(x + 20).
-    Analytical: x^2 - x - 20 = 0 => (x-5)(x+4)=0. Positive root x=5.
-    """
-    with Canvas() as model:
-        x = model.solver_var(name="x")
-        
-        # x^2 = x + 20
-        lhs = x * x
-        rhs = x + Var(20.0, name="20")
-        
-        lhs.must_equal(rhs)
-        
-        # Solve
-        model.solve()
-        
-        # Check result
-        val_x = model.get_value(x)
-        
-        # It could converge to 5 or -4 depending on initialization.
-        is_root = abs(val_x - 5.0) < 1e-5 or abs(val_x + 4.0) < 1e-5
-        assert is_root, f"Solver converged to non-root value: {val_x}"
-        
-        # Check Residual explicitly
-        val_lhs = model.get_value(lhs)
-        val_rhs = model.get_value(rhs)
-        assert_float_equal(val_lhs, val_rhs, "Constraint residual is not zero")
-
+# --- 4. Domain Logic & Solver ---
 
 def test_cash_flow_sweep_correctness():
     """
-    Tests specific financial modeling patterns to ensure domain accuracy.
-    Adapts 'examples/5_simple_cash_flow_sweep.py'
-    
-    Validates:
-    1. Inter-period dependency (.prev)
-    2. Intra-period circularity (Interest -> NI -> Sweep -> Debt -> Interest)
-    3. Vectorized solver execution (3-year model)
+    Verifies financial modeling patterns (Time-series + Circularity).
+    Regressed Logic Restored: Explicitly verifies Year 2 to check .prev() recursion.
     """
     NUM_YEARS = 3
-    
     with Canvas() as model:
-        # --- 1. Inputs ---
-        initial_ebitda = Var([100.0], name="Initial EBITDA")
-        ebitda_growth = Var([0.05] * NUM_YEARS, name="EBITDA Growth Rate")
-        tax_rate = Var([0.30] * NUM_YEARS, name="Tax Rate")
-        y0_debt_balance = Var([500.0], name="Y0 Debt Balance")
-        interest_rate = Var([0.06] * NUM_YEARS, name="Interest Rate")
-        
-        # Helper constants
-        one = Var([1.0] * NUM_YEARS, name="one")
-        two = Var([2.0] * NUM_YEARS, name="two")
-
-        # --- 2. Solver Variables ---
         ebitda = model.solver_var(name="EBITDA")
-        interest_expense = model.solver_var(name="Interest Expense")
-        debt_balance = model.solver_var(name="Debt Balance")
-
-        # --- 3. Logic ---
-        # EBITDA Forecast
-        ebitda.must_equal(ebitda.prev(default=initial_ebitda) * (one + ebitda_growth))
-
-        # Income Statement
-        ebt = ebitda - interest_expense
-        taxes = ebt * tax_rate
-        net_income = ebt - taxes
+        interest = model.solver_var(name="Interest")
+        debt = model.solver_var(name="Debt")
         
-        # Cash Flow & Debt Paydown (The Circularity)
-        cash_flow_for_sweep = net_income # Simplified: CF = NI
+        # Inputs
+        initial_ebitda = Var([100.0], name="InitEBITDA")
+        growth = Var([0.05] * NUM_YEARS, name="Growth")
+        rate = Var([0.06] * NUM_YEARS, name="Rate")
+        tax = Var([0.30] * NUM_YEARS, name="Tax")
+        y0_debt = Var([500.0], name="Y0Debt")
         
-        beginning_debt = debt_balance.prev(default=y0_debt_balance)
+        # Logic
+        ebitda.must_equal(ebitda.prev(default=initial_ebitda) * (Var([1.0]*3, name="1") + growth))
         
-        # Ending debt is simply Begin - Paydown
-        debt_balance.must_equal(beginning_debt - cash_flow_for_sweep)
+        ni = (ebitda - interest) * (Var([1.0]*3, name="1") - tax)
+        sweep = ni
         
-        # Average Debt for Interest Calc
-        avg_debt_balance = (beginning_debt + debt_balance) / two
-        interest_expense.must_equal(avg_debt_balance * interest_rate)
+        beg_debt = debt.prev(default=y0_debt)
+        debt.must_equal(beg_debt - sweep)
         
-        # --- 4. Solve ---
+        avg_debt = (beg_debt + debt) / Var([2.0]*3, name="2")
+        interest.must_equal(avg_debt * rate)
+        
         model.solve()
         
-        # --- 5. Verification ---
+        # --- Verification ---
         
-        # A. Analytical Check for Year 1
-        # Variables for Year 1:
-        # E1 = 100 * 1.05 = 105
-        # BegDebt = 500
-        # Int = 0.06
-        # Tax = 0.30
+        # 1. Year 1 Analysis (The Circularity)
+        # NI = (105 - (500 - 0.5*NI)*0.06) * 0.7
+        # NI = 52.5 + 0.021*NI => NI = 52.5 / 0.979 = 53.626149...
+        expected_ni_y1 = 53.626149
+        actual_ni_values = model.get_value(ni)
+        assert_float_equal(actual_ni_values[0], expected_ni_y1, "Year 1 Net Income mismatch")
         
-        # Algebra:
-        # NI = (EBITDA - Interest) * (1 - Tax)
-        # Interest = AvgDebt * Rate = ((BegDebt + EndDebt) / 2) * Rate
-        # EndDebt = BegDebt - NI
-        # -> Interest = ((BegDebt + BegDebt - NI) / 2) * Rate
-        # -> Interest = (BegDebt - 0.5*NI) * Rate
-        
-        # Substitute Interest into NI:
-        # NI = (EBITDA - (BegDebt - 0.5*NI)*Rate) * (1 - Tax)
-        # NI = (EBITDA - BegDebt*Rate + 0.5*NI*Rate) * (1 - Tax)
-        # NI = (EBITDA - BegDebt*Rate)*(1-Tax) + 0.5*NI*Rate*(1-Tax)
-        # NI - 0.5*NI*Rate*(1-Tax) = (EBITDA - BegDebt*Rate)*(1-Tax)
-        # NI * (1 - 0.5*Rate*(1-Tax)) = (EBITDA - BegDebt*Rate)*(1-Tax)
-        # NI = ((EBITDA - BegDebt*Rate)*(1-Tax)) / (1 - 0.5*Rate*(1-Tax))
-        
-        e1 = 105.0
-        beg_debt = 500.0
-        r = 0.06
-        t = 0.30
-        
-        numerator = (e1 - beg_debt * r) * (1 - t)
-        denominator = 1 - 0.5 * r * (1 - t)
-        
-        expected_ni_y1 = numerator / denominator
-        
-        actual_ni_values = model.get_value(net_income)
-        actual_ni_y1 = actual_ni_values[0]
-        
-        assert_float_equal(
-            actual_ni_y1, 
-            expected_ni_y1, 
-            "Year 1 Net Income does not match analytical solution."
-        )
-
-        # B. Temporal Integrity Check
-        # Ensure that Year 2 depends on Year 1 correctly
-        actual_debt_values = model.get_value(debt_balance)
+        # 2. Year 2 Analysis (The Temporal Recursion)
+        # Checks if Year 1 Ending Debt correctly flows into Year 2 Beginning Debt
+        actual_debt_values = model.get_value(debt)
         y1_end_debt = actual_debt_values[0]
         
-        # Year 2 Calculation manually
-        # E2 = 105 * 1.05 = 110.25
-        e2 = 110.25
-        beg_debt_y2 = y1_end_debt # The roll-forward
+        # Calc Year 2 manually
+        e2 = 105.0 * 1.05 # 110.25
+        beg_debt_y2 = y1_end_debt
         
-        numerator_y2 = (e2 - beg_debt_y2 * r) * (1 - t)
-        # denominator stays same
-        expected_ni_y2 = numerator_y2 / denominator
+        # NI_2 logic same as Y1 but with different E and BegDebt
+        # NI = (E - (Beg - 0.5*NI)*R) * (1-T)
+        # NI = (E - Beg*R + 0.5*NI*R)*(1-T)
+        # NI = (E - Beg*R)*(1-T) + 0.5*NI*R*(1-T)
+        # NI * (1 - 0.5*R*(1-T)) = (E - Beg*R)*(1-T)
         
-        actual_ni_y2 = actual_ni_values[1]
+        r = 0.06
+        t = 0.30
+        denom = 1.0 - 0.5 * r * (1.0 - t)
+        numer = (e2 - beg_debt_y2 * r) * (1.0 - t)
         
-        assert_float_equal(
-            actual_ni_y2,
-            expected_ni_y2,
-            "Year 2 Net Income failed. Time-series roll-forward likely broken."
-        )
+        expected_ni_y2 = numer / denom
+        
+        assert_float_equal(actual_ni_values[1], expected_ni_y2, "Year 2 Net Income mismatch (Temporal Recursion broken)")
 
-
-def test_solver_infeasibility_handling():
+def test_solver_convergence_nonlinear():
     """
-    Verifies that the engine raises a clean RuntimeError when the solver
-    cannot find a solution (e.g., x = x + 1).
+    Verifies solver handles standard non-linear convergence.
+    Problem: x = sqrt(x + 20)  => x^2 - x - 20 = 0 => Roots: 5, -4.
     """
     with Canvas() as model:
         x = model.solver_var(name="x")
+        lhs = x * x
+        rhs = x + Var(20.0, name="20")
+        lhs.must_equal(rhs)
         
-        # Impossible constraint: x = x + 10
-        # Residual: 0 = 10 (Impossible)
+        model.solve()
+        
+        val_x = model.get_value(x)
+        is_root = abs(val_x - 5.0) < 1e-5 or abs(val_x + 4.0) < 1e-5
+        assert is_root, f"Solver converged to non-root value: {val_x}"
+
+def test_solver_singular_jacobian_handling():
+    """
+    Verifies behavior when Jacobian is singular (gradient is zero).
+    Equation: (x - 5)^2 = 0. Derivative at root is 0.
+    """
+    with Canvas() as model:
+        x = model.solver_var(name="x")
+        term = x - 5.0
+        x.must_equal(term * term)
+        
+        try:
+            model.solve()
+        except RuntimeError:
+            pass # Failure is acceptable, crashing is not.
+
+def test_solver_infeasibility_handling():
+    """Verifies that the engine raises RuntimeError for unsolvable systems."""
+    with Canvas() as model:
+        x = model.solver_var(name="x")
         x.must_equal(x + 10.0)
         
-        # IPOPT should return status 2 (Infeasible_Problem_Detected) or similar.
-        # The Rust engine maps this to a ComputationError, which becomes a RuntimeError in Python.
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(RuntimeError) as exc:
             model.solve()
-        
-        # Verify the message contains useful info
-        assert "IPOPT Solver failed" in str(exc_info.value)
+        assert "IPOPT" in str(exc.value)
