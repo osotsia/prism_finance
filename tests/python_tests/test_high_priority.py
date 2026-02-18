@@ -230,3 +230,122 @@ def test_solver_convergence_nonlinear():
         val_lhs = model.get_value(lhs)
         val_rhs = model.get_value(rhs)
         assert_float_equal(val_lhs, val_rhs, "Constraint residual is not zero")
+
+
+def test_cash_flow_sweep_correctness():
+    """
+    Tests specific financial modeling patterns to ensure domain accuracy.
+    Adapts 'examples/5_simple_cash_flow_sweep.py'
+    
+    Validates:
+    1. Inter-period dependency (.prev)
+    2. Intra-period circularity (Interest -> NI -> Sweep -> Debt -> Interest)
+    3. Vectorized solver execution (3-year model)
+    """
+    NUM_YEARS = 3
+    
+    with Canvas() as model:
+        # --- 1. Inputs ---
+        initial_ebitda = Var([100.0], name="Initial EBITDA")
+        ebitda_growth = Var([0.05] * NUM_YEARS, name="EBITDA Growth Rate")
+        tax_rate = Var([0.30] * NUM_YEARS, name="Tax Rate")
+        y0_debt_balance = Var([500.0], name="Y0 Debt Balance")
+        interest_rate = Var([0.06] * NUM_YEARS, name="Interest Rate")
+        
+        # Helper constants
+        one = Var([1.0] * NUM_YEARS, name="one")
+        two = Var([2.0] * NUM_YEARS, name="two")
+
+        # --- 2. Solver Variables ---
+        ebitda = model.solver_var(name="EBITDA")
+        interest_expense = model.solver_var(name="Interest Expense")
+        debt_balance = model.solver_var(name="Debt Balance")
+
+        # --- 3. Logic ---
+        # EBITDA Forecast
+        ebitda.must_equal(ebitda.prev(default=initial_ebitda) * (one + ebitda_growth))
+
+        # Income Statement
+        ebt = ebitda - interest_expense
+        taxes = ebt * tax_rate
+        net_income = ebt - taxes
+        
+        # Cash Flow & Debt Paydown (The Circularity)
+        cash_flow_for_sweep = net_income # Simplified: CF = NI
+        
+        beginning_debt = debt_balance.prev(default=y0_debt_balance)
+        
+        # Ending debt is simply Begin - Paydown
+        debt_balance.must_equal(beginning_debt - cash_flow_for_sweep)
+        
+        # Average Debt for Interest Calc
+        avg_debt_balance = (beginning_debt + debt_balance) / two
+        interest_expense.must_equal(avg_debt_balance * interest_rate)
+        
+        # --- 4. Solve ---
+        model.solve()
+        
+        # --- 5. Verification ---
+        
+        # A. Analytical Check for Year 1
+        # Variables for Year 1:
+        # E1 = 100 * 1.05 = 105
+        # BegDebt = 500
+        # Int = 0.06
+        # Tax = 0.30
+        
+        # Algebra:
+        # NI = (EBITDA - Interest) * (1 - Tax)
+        # Interest = AvgDebt * Rate = ((BegDebt + EndDebt) / 2) * Rate
+        # EndDebt = BegDebt - NI
+        # -> Interest = ((BegDebt + BegDebt - NI) / 2) * Rate
+        # -> Interest = (BegDebt - 0.5*NI) * Rate
+        
+        # Substitute Interest into NI:
+        # NI = (EBITDA - (BegDebt - 0.5*NI)*Rate) * (1 - Tax)
+        # NI = (EBITDA - BegDebt*Rate + 0.5*NI*Rate) * (1 - Tax)
+        # NI = (EBITDA - BegDebt*Rate)*(1-Tax) + 0.5*NI*Rate*(1-Tax)
+        # NI - 0.5*NI*Rate*(1-Tax) = (EBITDA - BegDebt*Rate)*(1-Tax)
+        # NI * (1 - 0.5*Rate*(1-Tax)) = (EBITDA - BegDebt*Rate)*(1-Tax)
+        # NI = ((EBITDA - BegDebt*Rate)*(1-Tax)) / (1 - 0.5*Rate*(1-Tax))
+        
+        e1 = 105.0
+        beg_debt = 500.0
+        r = 0.06
+        t = 0.30
+        
+        numerator = (e1 - beg_debt * r) * (1 - t)
+        denominator = 1 - 0.5 * r * (1 - t)
+        
+        expected_ni_y1 = numerator / denominator
+        
+        actual_ni_values = model.get_value(net_income)
+        actual_ni_y1 = actual_ni_values[0]
+        
+        assert_float_equal(
+            actual_ni_y1, 
+            expected_ni_y1, 
+            "Year 1 Net Income does not match analytical solution."
+        )
+
+        # B. Temporal Integrity Check
+        # Ensure that Year 2 depends on Year 1 correctly
+        actual_debt_values = model.get_value(debt_balance)
+        y1_end_debt = actual_debt_values[0]
+        
+        # Year 2 Calculation manually
+        # E2 = 105 * 1.05 = 110.25
+        e2 = 110.25
+        beg_debt_y2 = y1_end_debt # The roll-forward
+        
+        numerator_y2 = (e2 - beg_debt_y2 * r) * (1 - t)
+        # denominator stays same
+        expected_ni_y2 = numerator_y2 / denominator
+        
+        actual_ni_y2 = actual_ni_values[1]
+        
+        assert_float_equal(
+            actual_ni_y2,
+            expected_ni_y2,
+            "Year 2 Net Income failed. Time-series roll-forward likely broken."
+        )
