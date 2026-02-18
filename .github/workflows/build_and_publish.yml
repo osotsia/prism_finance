@@ -30,13 +30,14 @@ jobs:
       - name: Install Python dependencies and build for testing
         run: |
           pip install pytest maturin
-          # Use a debug build for faster testing
+          # Build wheel with default features (extension-module enabled)
           maturin build --out dist
           pip install dist/*.whl
 
       - name: Run Rust tests
         working-directory: rust
-        run: cargo test
+        # Fix: Disable extension-module so the test binary links against libpython
+        run: cargo test --no-default-features
 
       - name: Run Python tests
         run: pytest

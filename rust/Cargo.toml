@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 petgraph = "0.6.4"
-pyo3 = { version = "0.27", features = ["extension-module"] } # 0.27 really is the current version
+pyo3 = { version = "0.27" } 
 thiserror = "1.0"
 tempfile = "3"
 smallvec = "1.11"
@@ -35,3 +35,8 @@ rstest = "0.21.0"
 
 [build-dependencies]
 pkg-config = "0.3"
+
+# Change: Added feature definition to allow disabling extension-module for tests
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
