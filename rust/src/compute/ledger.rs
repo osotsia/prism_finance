@@ -1,5 +1,5 @@
 use thiserror::Error;
-use serde::{Serialize, Deserialize}; // Added Serde support to Ledger too
+use serde::{Serialize, Deserialize};
 
 #[derive(Error, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ComputationError {
@@ -91,7 +91,6 @@ impl Ledger {
         self.data.as_mut_ptr()
     }
 
-    // ADDED: Helper for safety assertions
     #[inline(always)]
     pub fn raw_data_len(&self) -> usize {
         self.data.len()
@@ -99,6 +98,13 @@ impl Ledger {
 
     #[inline(always)]
     pub fn model_len(&self) -> usize { self.model_len }
+
+    /// Helper to access the underlying vector mutably. 
+    /// Useful for advanced manipulation or testing internal states.
+    #[inline(always)]
+    pub fn raw_data_mut_vec(&mut self) -> &mut Vec<f64> {
+        &mut self.data
+    }
 }
 
 impl Default for Ledger {

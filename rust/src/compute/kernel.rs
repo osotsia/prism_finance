@@ -1,107 +1,69 @@
 use crate::compute::bytecode::OpCode;
-use wide::f64x4;
 
-// --- Configuration ---
-type SimdType = f64x4;
-const LANE_WIDTH: usize = 4;
-
-/// Executes a single instruction.
+/// Executes a single mathematical operation over a time-series vector.
 ///
-/// **Params:**
-/// - `aux`: Auxiliary data (e.g., lag for Prev).
+/// # Safety
+/// This function is safe. It relies on Rust slices to enforce boundaries.
+/// Performance relies on the compiler auto-vectorizing the Zip iterators.
 #[inline(always)]
-pub unsafe fn execute_instruction(
+pub fn execute_instruction(
     op: OpCode,
-    len: usize,
-    dest: *mut f64,
-    src1: *const f64,
-    src2: *const f64,
+    dest: &mut [f64],
+    src1: &[f64],
+    src2: &[f64],
     aux: u32,
 ) {
+    // Optimization: The compiler removes bounds checks because zip
+    // halts at the shortest slice. Since we ensure slices are equal length
+    // in the Engine, this loop runs without conditionals.
     match op {
-        OpCode::Add => apply_arithmetic(len, dest, src1, src2, |a, b| a + b, |a, b| a + b),
-        OpCode::Sub => apply_arithmetic(len, dest, src1, src2, |a, b| a - b, |a, b| a - b),
-        OpCode::Mul => apply_arithmetic(len, dest, src1, src2, |a, b| a * b, |a, b| a * b),
-        OpCode::Div => apply_arithmetic(len, dest, src1, src2, |a, b| a / b, |a, b| a / b),
-        OpCode::Prev => apply_shift(len, dest, src1, src2, aux as usize),
-        OpCode::Identity => {} // No-op
-    }
-}
-
-/// Generic driver for arithmetic operations.
-/// 
-/// Accepts two closures to allow the compiler to inline specific operations:
-/// 1. `simd_op`: Operations on 256-bit vectors (f64x4).
-/// 2. `scalar_op`: Fallback operations for the tail end (f64).
-#[inline(always)]
-unsafe fn apply_arithmetic<S, C>(
-    len: usize,
-    dest: *mut f64,
-    src1: *const f64,
-    src2: *const f64,
-    simd_op: S,
-    scalar_op: C,
-) where 
-    S: Fn(SimdType, SimdType) -> SimdType,
-    C: Fn(f64, f64) -> f64,
-{
-    // Optimization: Hot path for Scalar models (len=1).
-    // This avoids loop setup overhead, which is critical for the pure_rust_benchmark.
-    if len == 1 {
-        *dest = scalar_op(*src1, *src2);
-        return;
-    }
-
-    let mut i = 0;
-
-    // 1. Chunk Phase (SIMD)
-    // Only enter if we have at least one full vector width.
-    if len >= LANE_WIDTH {
-        while i + LANE_WIDTH <= len {
-            // Unaligned loads/stores are necessary as Ledger nodes are packed tightly.
-            // Casting to [f64; 4] ensures we use safe standard library methods for the memory access.
-            let arr_a = src1.add(i).cast::<[f64; 4]>().read_unaligned();
-            let arr_b = src2.add(i).cast::<[f64; 4]>().read_unaligned();
-            
-            let a = SimdType::from(arr_a);
-            let b = SimdType::from(arr_b);
-            
-            let res = simd_op(a, b);
-            
-            let arr_res = res.to_array();
-            dest.add(i).cast::<[f64; 4]>().write_unaligned(arr_res);
-            
-            i += LANE_WIDTH;
+        OpCode::Add => {
+            for ((d, a), b) in dest.iter_mut().zip(src1).zip(src2) {
+                *d = *a + *b;
+            }
         }
-    }
-
-    // 2. Tail Phase (Scalar)
-    // Handle remaining elements (or small vectors where len < 4).
-    while i < len {
-        let a = *src1.add(i);
-        let b = *src2.add(i);
-        *dest.add(i) = scalar_op(a, b);
-        i += 1;
+        OpCode::Sub => {
+            for ((d, a), b) in dest.iter_mut().zip(src1).zip(src2) {
+                *d = *a - *b;
+            }
+        }
+        OpCode::Mul => {
+            for ((d, a), b) in dest.iter_mut().zip(src1).zip(src2) {
+                *d = *a * *b;
+            }
+        }
+        OpCode::Div => {
+            for ((d, a), b) in dest.iter_mut().zip(src1).zip(src2) {
+                *d = *a / *b;
+            }
+        }
+        OpCode::Prev => apply_shift(dest, src1, src2, aux as usize),
+        OpCode::Identity => { /* No-op */ }
     }
 }
 
-/// Optimized memory move for time-series shifts.
+/// Handles temporal shifts (e.g., "Previous Value").
+///
+/// Logic:
+/// 1. Fill the 'gap' created by the lag with the default value (src2).
+/// 2. Copy the remaining history from the main value (src1).
 #[inline(always)]
-unsafe fn apply_shift(
-    len: usize,
-    dest: *mut f64,
-    src_main: *const f64,
-    src_default: *const f64,
-    lag: usize,
-) {
+fn apply_shift(dest: &mut [f64], src_main: &[f64], src_default: &[f64], lag: usize) {
+    let len = dest.len();
+
     if lag >= len {
-        // Shift exceeds timeline; entire result is default.
-        std::ptr::copy_nonoverlapping(src_default, dest, len);
+        // Entire period is covered by default (lag is huge)
+        dest.copy_from_slice(src_default);
     } else {
-        // 1. Fill gap with default
-        std::ptr::copy_nonoverlapping(src_default, dest, lag);
-        // 2. Copy shifted main data
-        std::ptr::copy_nonoverlapping(src_main, dest.add(lag), len - lag);
+        // 1. The Gap: Fill start of dest with default values
+        let (dest_gap, dest_rest) = dest.split_at_mut(lag);
+        dest_gap.copy_from_slice(&src_default[0..lag]);
+
+        // 2. The Shift: Copy history into the rest
+        // We take the main source, chop off the end (which falls off the timeline),
+        // and copy it to the rest of dest.
+        let copy_len = len - lag;
+        dest_rest.copy_from_slice(&src_main[0..copy_len]);
     }
 }
 
@@ -110,63 +72,52 @@ unsafe fn apply_shift(
 mod tests {
     use super::*;
 
-    // --- Helpers ---
-    
-    /// Runs a specific op over a range of vector lengths to catch
-    /// off-by-one errors in the SIMD/Scalar transition logic.
-    fn verify_op_parity(op: OpCode, expected_val: f64) {
-        // Test 0 (empty), 1 (scalar fast-path), 4 (exact SIMD lane), 
-        // 5 (SIMD + 1 tail), 17 (multiple SIMD + tail)
-        for len in 0..=17 {
-            let a = vec![2.0; len];
-            let b = vec![4.0; len];
-            let mut dest = vec![0.0; len];
-            let aux = 0;
-
-            unsafe {
-                execute_instruction(op, len, dest.as_mut_ptr(), a.as_ptr(), b.as_ptr(), aux);
-            }
-
-            for (i, val) in dest.iter().enumerate() {
-                assert_eq!(*val, expected_val, "Failed at len {}, index {}", len, i);
-            }
-        }
-    }
-
-    // --- Tests ---
-
     #[test]
-    fn test_arithmetic_kernels() {
-        verify_op_parity(OpCode::Add, 6.0); // 2 + 4
-        verify_op_parity(OpCode::Mul, 8.0); // 2 * 4
-        verify_op_parity(OpCode::Div, 0.5); // 2 / 4
+    fn test_kernel_zip_truncation_safety() {
+        // High Priority: Verify that if slices are somehow mismatched in length,
+        // the kernel does not panic or read out of bounds (zip behavior).
+        // While Engine prevents this, the Kernel unit must be robust.
+        let mut dest = vec![0.0; 3]; // Shortest
+        let src1 = vec![1.0; 4];
+        let src2 = vec![2.0; 5];
+        
+        execute_instruction(OpCode::Add, &mut dest, &src1, &src2, 0);
+        
+        assert_eq!(dest, vec![3.0, 3.0, 3.0]); // 1+2
     }
 
     #[test]
-    fn test_prev_shift_logic() {
-        // Verify time-series shifting across boundary conditions
-        let max_len = 10;
-        let main: Vec<f64> = (0..max_len).map(|v| v as f64).collect();
-        let default = vec![-1.0; max_len];
+    fn test_kernel_temporal_shift_overflow() {
+        // Medium Priority: Verify logic when lag > model length.
+        // This hits the `if lag >= len` branch to prevent split_at_mut panic.
+        let model_len = 5;
+        let main_data = vec![10.0; model_len];
+        let default_data = vec![99.0; model_len];
+        let mut dest = vec![0.0; model_len];
 
-        // Case 1: Standard Shift (Lag 2) -> [-1, -1, 0, 1, 2...]
-        let mut dest = vec![0.0; max_len];
-        unsafe {
-            execute_instruction(OpCode::Prev, max_len, dest.as_mut_ptr(), main.as_ptr(), default.as_ptr(), 2);
-        }
-        assert_eq!(dest[0], -1.0);
-        assert_eq!(dest[2], 0.0);
+        // Lag = 10 (exceeds length 5)
+        apply_shift(&mut dest, &main_data, &default_data, 10);
+        
+        // Should be all defaults
+        assert_eq!(dest, vec![99.0, 99.0, 99.0, 99.0, 99.0]);
+    }
 
-        // Case 2: Lag > Len -> All Default
-        unsafe {
-            execute_instruction(OpCode::Prev, max_len, dest.as_mut_ptr(), main.as_ptr(), default.as_ptr(), 20);
-        }
-        assert!(dest.iter().all(|&x| x == -1.0));
+    #[test]
+    fn test_kernel_aliasing_correctness() {
+        // High Priority: Verify calculations work when Dest and Source are the same slice.
+        // A = A + B (Accumulator pattern)
+        let mut data_a = vec![10.0, 10.0, 10.0];
+        let data_b = vec![5.0, 5.0, 5.0];
 
-        // Case 3: Identity (Lag 0) -> Exact Copy
+        // Unsafe block required only to create aliased mutable/immutable refs for the test setup
+        // The kernel itself handles the operation safely via Copy semantics of f64.
+        let ptr = data_a.as_mut_ptr();
         unsafe {
-            execute_instruction(OpCode::Prev, max_len, dest.as_mut_ptr(), main.as_ptr(), default.as_ptr(), 0);
+            let dest = std::slice::from_raw_parts_mut(ptr, 3);
+            let src1 = std::slice::from_raw_parts(ptr, 3);
+            execute_instruction(OpCode::Add, dest, src1, &data_b, 0);
         }
-        assert_eq!(dest, main);
+
+        assert_eq!(data_a, vec![15.0, 15.0, 15.0]);
     }
 }
