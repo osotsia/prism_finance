@@ -104,3 +104,69 @@ unsafe fn apply_shift(
         std::ptr::copy_nonoverlapping(src_main, dest.add(lag), len - lag);
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Helpers ---
+    
+    /// Runs a specific op over a range of vector lengths to catch
+    /// off-by-one errors in the SIMD/Scalar transition logic.
+    fn verify_op_parity(op: OpCode, expected_val: f64) {
+        // Test 0 (empty), 1 (scalar fast-path), 4 (exact SIMD lane), 
+        // 5 (SIMD + 1 tail), 17 (multiple SIMD + tail)
+        for len in 0..=17 {
+            let a = vec![2.0; len];
+            let b = vec![4.0; len];
+            let mut dest = vec![0.0; len];
+            let aux = 0;
+
+            unsafe {
+                execute_instruction(op, len, dest.as_mut_ptr(), a.as_ptr(), b.as_ptr(), aux);
+            }
+
+            for (i, val) in dest.iter().enumerate() {
+                assert_eq!(*val, expected_val, "Failed at len {}, index {}", len, i);
+            }
+        }
+    }
+
+    // --- Tests ---
+
+    #[test]
+    fn test_arithmetic_kernels() {
+        verify_op_parity(OpCode::Add, 6.0); // 2 + 4
+        verify_op_parity(OpCode::Mul, 8.0); // 2 * 4
+        verify_op_parity(OpCode::Div, 0.5); // 2 / 4
+    }
+
+    #[test]
+    fn test_prev_shift_logic() {
+        // Verify time-series shifting across boundary conditions
+        let max_len = 10;
+        let main: Vec<f64> = (0..max_len).map(|v| v as f64).collect();
+        let default = vec![-1.0; max_len];
+
+        // Case 1: Standard Shift (Lag 2) -> [-1, -1, 0, 1, 2...]
+        let mut dest = vec![0.0; max_len];
+        unsafe {
+            execute_instruction(OpCode::Prev, max_len, dest.as_mut_ptr(), main.as_ptr(), default.as_ptr(), 2);
+        }
+        assert_eq!(dest[0], -1.0);
+        assert_eq!(dest[2], 0.0);
+
+        // Case 2: Lag > Len -> All Default
+        unsafe {
+            execute_instruction(OpCode::Prev, max_len, dest.as_mut_ptr(), main.as_ptr(), default.as_ptr(), 20);
+        }
+        assert!(dest.iter().all(|&x| x == -1.0));
+
+        // Case 3: Identity (Lag 0) -> Exact Copy
+        unsafe {
+            execute_instruction(OpCode::Prev, max_len, dest.as_mut_ptr(), main.as_ptr(), default.as_ptr(), 0);
+        }
+        assert_eq!(dest, main);
+    }
+}

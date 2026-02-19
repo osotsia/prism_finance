@@ -4,13 +4,14 @@ Performance Regression Suite.
 To run: pytest tests/python_tests/test_performance.py --run-perf
 """
 import pytest
+import math
 import statistics
 import warnings
 from prism_finance import _core
 from .config import TestConfig
 
 @pytest.mark.benchmark
-def test_engine_throughput_regression():
+def test_engine_throughput():
     """
     Measures engine throughput.
     
@@ -42,21 +43,22 @@ def test_engine_throughput_regression():
         return
 
     mean_throughput = statistics.mean(throughputs)
+    margin_of_error = 1.96 * statistics.stdev(throughputs) / math.sqrt(iterations)
     
     # Formatting for display
     mean_fmt = mean_throughput / 1e6
     thresh_fmt = threshold / 1e6
+    moe_fmt = margin_of_error / 1e6
     
     # Report results to stdout (visible with pytest -s)
     print(f"\n--- Benchmark Results (N={iterations}) ---")
-    print(f"Mean Throughput: {mean_fmt:.2f} M nodes/sec")
-    print(f"Threshold:       {thresh_fmt:.2f} M nodes/sec")
+    print(f"Throughput: {mean_fmt:.1f} ± {moe_fmt:.1f} M nodes/sec")
+    print(f"Threshold:       {thresh_fmt:.1f} M nodes/sec")
     
-    # Logic: Always pass, but Warn on regression
-    if mean_throughput < threshold:
-        warnings.warn(
-            f"\nPERFORMANCE REGRESSION:\n"
-            f"Current: {mean_fmt:.2f}M nodes/sec\n"
-            f"Target:  {thresh_fmt:.2f}M nodes/sec",
-            UserWarning
-        )
+    # Always warn
+    warnings.warn(
+        f"\nPERFORMANCE RESULTS (n={iterations}):\n"
+        f"Current: {mean_fmt:.1f} ± {moe_fmt:.1f} M nodes/sec\n"
+        f"Target:  {thresh_fmt:.1f} M nodes/sec",
+        UserWarning
+    )

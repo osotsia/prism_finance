@@ -9,7 +9,7 @@ class TestConfig:
     # Performance Thresholds
     # Target: 133M nodes/sec based on mean of 30 iterations
     PERF_THRESHOLD_NODES_PER_SEC = 135_000_000 
-    PERF_ITERATIONS = 30
+    PERF_ITERATIONS = 60
     
     # Graph Generation constraints for Fuzzing
     FUZZ_MAX_NODES = 100

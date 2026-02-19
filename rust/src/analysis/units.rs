@@ -1,3 +1,5 @@
+// rust/src/analysis/units.rs
+
 use std::collections::HashMap;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -7,6 +9,9 @@ pub struct ParsedUnit {
 
 impl ParsedUnit {
     pub fn from_str(s: &str) -> Result<Self, ()> {
+        // Fix 2: Reject empty or whitespace-only strings explicitly
+        if s.trim().is_empty() { return Err(()); }
+
         let mut terms = HashMap::new();
         let mut parts = s.split('/');
         
@@ -39,13 +44,66 @@ impl ParsedUnit {
 
     pub fn to_string(&self) -> String {
         let (num, den): (Vec<_>, Vec<_>) = self.terms.iter().filter(|&(_, &v)| v != 0).partition(|&(_, &v)| v > 0);
+        
         let fmt = |terms: Vec<(&String, &i32)>| -> String {
             if terms.is_empty() { return "1".to_string(); }
             let mut t = terms; t.sort_by_key(|a| a.0);
             t.into_iter().map(|(k, v)| if v.abs() == 1 { k.clone() } else { format!("{}^{}", k, v.abs()) }).collect::<Vec<_>>().join("*")
         };
+        
         let n_str = fmt(num);
         let d_str = fmt(den);
-        if d_str == "1" { if n_str == "1" { "".into() } else { n_str } } else { format!("{}/{}", n_str, d_str) }
+        
+        // Fix 1: If denominator is 1, return numerator (even if it is "1")
+        if d_str == "1" { 
+            n_str 
+        } else { 
+            format!("{}/{}", n_str, d_str) 
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_valid() {
+        let cases = vec![
+            ("USD", "USD"),
+            ("m/s", "m/s"),
+            ("m*m", "m^2"),
+            ("m^2/m", "m"), // Cancellation logic check
+            ("1", "1"),     // Identity
+        ];
+
+        for (input, expected) in cases {
+            let u = ParsedUnit::from_str(input).expect("Failed to parse");
+            assert_eq!(u.to_string(), expected, "Input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid() {
+        let failures = vec![
+            "",           // Empty
+            "   ",        // Whitespace
+            "USD//MWh",   // Double slash
+            "USD^bar",    // Non-numeric exponent
+        ];
+
+        for input in failures {
+            assert!(ParsedUnit::from_str(input).is_err(), "Should fail: '{}'", input);
+        }
+    }
+
+    #[test]
+    fn test_arithmetic() {
+        // (kg * m / s^2) * s = kg * m / s
+        let mut force = ParsedUnit::from_str("kg*m/s^2").unwrap();
+        let time = ParsedUnit::from_str("s").unwrap();
+        
+        force.multiply(&time);
+        assert_eq!(force.to_string(), "kg*m/s");
     }
 }

@@ -130,3 +130,67 @@ pub extern "C" fn intermediate_callback(
     }
     1
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{Registry, NodeKind, Operation, NodeMetadata};
+    use crate::compute::bytecode::Compiler;
+    use crate::analysis::topology;
+    use std::sync::Mutex;
+
+    #[test]
+    fn test_finite_difference_jacobian() {
+        // Function: f(x) = x^2
+        // We set up a residual: R = x*x.
+        // Analytical Derivative: dR/dx = 2x.
+        // Point: x = 3.0. Expected Derivative = 6.0.
+
+        // 1. Build Graph
+        let mut reg = Registry::new();
+        let x = reg.add_node(NodeKind::SolverVariable, &[], NodeMetadata::default());
+        let r = reg.add_node(NodeKind::Formula(Operation::Multiply), &[x, x], NodeMetadata::default());
+
+        // 2. Compile Program
+        let order = topology::sort(&reg).unwrap();
+        let program = Compiler::new(&reg).compile(order).unwrap();
+        
+        // 3. Setup Problem Context
+        let mut ledger = Ledger::new();
+        ledger.resize(reg.count(), 1);
+
+        let problem = PrismProblem {
+            registry: &reg,
+            program: &program,
+            variables: vec![x],
+            residuals: vec![r],
+            model_len: 1,
+            base_ledger: ledger,
+            iteration_history: Mutex::new(Vec::new()),
+        };
+
+        // 4. Invoke Callback
+        // IPOPT signature: values array populated with gradients.
+        let mut values = vec![0.0]; 
+        let mut x_input = vec![3.0];
+        let user_data = &problem as *const _ as *mut c_void;
+
+        let success = eval_jac_g(
+            1, // n (vars)
+            x_input.as_mut_ptr(), 
+            0, // new_x
+            1, // m (constraints)
+            1, // nele (elements)
+            std::ptr::null_mut(), 
+            std::ptr::null_mut(), 
+            values.as_mut_ptr(), 
+            user_data
+        );
+
+        assert_eq!(success, 1, "Callback failed");
+        
+        let derivative = values[0];
+        assert!((derivative - 6.0).abs() < 1e-6, "Expected 6.0, got {:.6}", derivative);
+    }
+}

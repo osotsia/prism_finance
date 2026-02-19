@@ -78,3 +78,55 @@ pub fn downstream_from(registry: &Registry, start_nodes: &[NodeId]) -> HashSet<N
     }
     visited
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{NodeKind, NodeMetadata, Operation};
+
+    fn make_meta(name: &str) -> NodeMetadata { 
+        NodeMetadata { name: name.into(), ..Default::default() } 
+    }
+
+    #[test]
+    fn test_sort_diamond_dependency() {
+        // Shape: A -> B, A -> C, B+C -> D
+        // Valid Orders: A,B,C,D or A,C,B,D
+        let mut reg = Registry::new();
+        let a = reg.add_node(NodeKind::Scalar(1.0), &[], make_meta("A"));
+        let b = reg.add_node(NodeKind::Formula(Operation::Add), &[a, a], make_meta("B"));
+        let c = reg.add_node(NodeKind::Formula(Operation::Add), &[a, a], make_meta("C"));
+        let d = reg.add_node(NodeKind::Formula(Operation::Add), &[b, c], make_meta("D"));
+
+        let res = sort(&reg).expect("Sort failed");
+        
+        let pos = |id: NodeId| res.iter().position(|&x| x == id).unwrap();
+        assert!(pos(a) < pos(b));
+        assert!(pos(a) < pos(c));
+        assert!(pos(b) < pos(d));
+        assert!(pos(c) < pos(d));
+    }
+
+    #[test]
+    fn test_cycle_detection_explicit() {
+        // Construct A -> B. Then force B -> A via internal mutation.
+        let mut reg = Registry::new();
+        let a = reg.add_node(NodeKind::Scalar(0.0), &[], make_meta("A")); // ID 0
+        let b = reg.add_node(NodeKind::Formula(Operation::Add), &[a, a], make_meta("B")); // ID 1
+        
+        // HACK: Manually inject the cycle A depends on B.
+        // A is at index 0. We verify it has no parents initially.
+        assert_eq!(reg.parents_ranges[0].1, 0);
+        
+        // 1. Add 'B' (ID 1) to the flat parent list
+        reg.parents_flat.push(b); 
+        // 2. Point 'A' (Index 0) to this new parent entry
+        let new_start = (reg.parents_flat.len() - 1) as u32;
+        reg.parents_ranges[0] = (new_start, 1); 
+
+        // Now A -> B and B -> A.
+        let err = sort(&reg).unwrap_err();
+        assert!(err.contains("Cycle detected"), "Msg: {}", err);
+    }
+}

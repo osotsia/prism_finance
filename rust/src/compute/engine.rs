@@ -62,3 +62,61 @@ impl Engine {
         Ok(())
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture {
+        ledger: Ledger,
+        program: Program,
+    }
+
+    impl Fixture {
+        fn new(model_len: usize, ops: Vec<OpCode>, p1: Vec<u32>, p2: Vec<u32>) -> Self {
+            let mut ledger = Ledger::new();
+            // Allocate enough space for inputs (indexes 1, 2) and output (index 0)
+            ledger.resize(3, model_len); 
+            
+            // Pre-fill inputs
+            ledger.set_input_at_index(1, &vec![10.0; model_len]).unwrap();
+            ledger.set_input_at_index(2, &vec![20.0; model_len]).unwrap();
+
+            let program = Program {
+                ops: ops.iter().map(|o| *o as u8).collect(),
+                p1,
+                p2,
+                aux: vec![0; ops.len()],
+                layout: vec![0; 3], 
+                order: vec![],
+                input_start_index: 0,
+            };
+
+            Self { ledger, program }
+        }
+    }
+
+    #[test]
+    fn test_engine_memory_boundaries() {
+        // Scenario: 1 Op, writing to index 0, reading from 1 and 2.
+        // Verifies that pointer offsets are calculated correctly for the given model_len.
+        let mut fix = Fixture::new(4, vec![OpCode::Add], vec![1], vec![2]);
+        
+        Engine::run(&fix.program, &mut fix.ledger).expect("Engine crash");
+        
+        let res = fix.ledger.get_at_index(0).unwrap();
+        assert_eq!(res, &[30.0, 30.0, 30.0, 30.0]);
+    }
+
+    #[test]
+    fn test_engine_scalar_fast_path() {
+        // Scenario: Scalar mode (len=1).
+        // Verifies the optimization branch in kernel.rs is triggered and correct.
+        let mut fix = Fixture::new(1, vec![OpCode::Mul], vec![1], vec![2]);
+        
+        Engine::run(&fix.program, &mut fix.ledger).expect("Engine crash");
+        
+        assert_eq!(fix.ledger.get_at_index(0).unwrap()[0], 200.0);
+    }
+}
