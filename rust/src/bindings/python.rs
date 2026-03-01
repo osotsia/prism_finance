@@ -386,6 +386,8 @@ impl PyComputationGraph {
         dict.set_item("total_ops", report.total_ops)?;
         dict.set_item("avg_jump_distance", report.avg_jump_distance)?;
         dict.set_item("op_counts", report.op_counts)?;
+        dict.set_item("write_sequentiality", report.write_sequentiality)?;
+        dict.set_item("input_read_contiguity", report.input_read_contiguity)?;
         
         // Flatten locality struct for Python dict
         let loc = PyDict::new(py);
