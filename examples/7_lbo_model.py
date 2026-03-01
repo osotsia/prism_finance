@@ -217,6 +217,8 @@ def build_and_run_lbo_model():
     # For now, tracing the Var traces the entire series calculation.
     model.trace(free_cash_flow)
 
+    print(model.telemetry())
+
 
 if __name__ == "__main__":
     build_and_run_lbo_model()

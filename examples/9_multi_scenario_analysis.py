@@ -3,6 +3,7 @@ import random
 import math
 from typing import Dict, List, Tuple, Any
 from prism_finance import Canvas, Var
+from tqdm import tqdm
 
 class Colors:
     """Terminal formatting constants."""
@@ -156,7 +157,7 @@ def run_sensitivity_demo():
 
         # run_batch is now a generator yielding (name, ScenarioResult)
         # As we move to the next iteration, the previous 'res' object is eligible for GC.
-        for name, res in model.run_batch(s_map, chunk_size=CHUNK_SIZE):
+        for name, res in tqdm(model.run_batch(s_map, chunk_size=CHUNK_SIZE), total=total_runs):
             # Parse index from name (e.g., 'S_0000042' -> 42)
             idx = int(name.split("_")[1])
             # Extract only the final time-step of the objective variable

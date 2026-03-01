@@ -1,17 +1,15 @@
 use crate::store::{Registry, NodeId, NodeKind, NodeMetadata, Operation, TemporalType, Unit};
 use crate::compute::{engine::Engine, ledger::Ledger, bytecode::{Compiler, Program}};
-use crate::analysis::{topology, validation};
+use crate::analysis::{topology, validation, telemetry};
 use crate::display::trace;
 use crate::solver::optimizer::{self, SolverConfig};
 use pyo3::prelude::*;
 use pyo3::exceptions::{PyValueError, PyRuntimeError};
-use pyo3::types::{PyBytes};
+use pyo3::types::{PyBytes, PyDict}; // Added PyDict
 use std::time::Instant;
 
 use rayon::prelude::*;
 use std::collections::HashMap;
-
-// --- Fix: Added module declaration to pyclass macros ---
 
 #[pyclass(module = "prism_finance._core")]
 #[derive(Clone)]
@@ -274,7 +272,7 @@ impl PyComputationGraph {
     }
     
     pub fn get_value(&mut self, ledger: &PyLedger, node_id: usize) -> PyResult<Option<Vec<f64>>> {
-        self.check_bounds(node_id)?; // Added Safety
+        self.check_bounds(node_id)?;
         self.ensure_compiled()?;
         let program = self.cached_program.as_ref().unwrap();
         // Centralized retrieval logic
@@ -378,7 +376,29 @@ impl PyComputationGraph {
         results.map_err(PyRuntimeError::new_err)
     }
 
+    /// NEW: Returns telemetry regarding the compiled execution plan.
+    pub fn get_telemetry<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.ensure_compiled()?;
+        let program = self.cached_program.as_ref().unwrap();
+        let report = telemetry::TelemetryReport::analyze(program);
 
+        let dict = PyDict::new(py);
+        dict.set_item("total_ops", report.total_ops)?;
+        dict.set_item("avg_jump_distance", report.avg_jump_distance)?;
+        dict.set_item("op_counts", report.op_counts)?;
+        
+        // Flatten locality struct for Python dict
+        let loc = PyDict::new(py);
+        loc.set_item("hot_l1", report.locality.hot_l1)?;
+        loc.set_item("warm_l1", report.locality.warm_l1)?;
+        loc.set_item("warm_l2", report.locality.warm_l2)?;
+        loc.set_item("cold_ram", report.locality.cold_ram)?;
+        loc.set_item("constants", report.locality.constants)?;
+        
+        dict.set_item("locality", loc)?;
+
+        Ok(dict)
+    }
 }
 
 #[pyfunction]

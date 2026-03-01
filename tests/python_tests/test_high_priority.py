@@ -66,7 +66,7 @@ def test_incremental_consistency_hypothesis(ops, initial_val):
         model.compute_all()
         full_res_2 = model.get_value(target_node)
         
-        assert abs(incremental_res - full_res_2) < 1e-5, "Incremental diverged from Full Recompute"
+        assert abs(incremental_res - full_res_2) < TestConfig.TOLERANCE, "Incremental diverged from Full Recompute"
 
 
 # --- 2. Concurrency & Isolation Tests ---
@@ -232,7 +232,7 @@ def test_solver_convergence_nonlinear():
         model.solve()
         
         val_x = model.get_value(x)
-        is_root = abs(val_x - 5.0) < 1e-5 or abs(val_x + 4.0) < 1e-5
+        is_root = abs(val_x - 5.0) < TestConfig.TOLERANCE or abs(val_x + 4.0) < TestConfig.TOLERANCE
         assert is_root, f"Solver converged to non-root value: {val_x}"
 
 def test_solver_singular_jacobian_handling():

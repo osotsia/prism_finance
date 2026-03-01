@@ -320,6 +320,13 @@ class Canvas:
     def validate(self) -> None:
         """Performs static analysis to detect unit mismatches or logical errors."""
         self._graph.validate()
+    
+    def telemetry(self) -> Dict[str, Any]:
+        """
+        Returns statistical analysis of the compiled execution plan.
+        Useful for auditing performance and cache efficiency.
+        """
+        return self._graph.get_telemetry()
 
     def get_evaluation_order(self) -> List[int]:
         """Returns the topological execution sequence of the graph."""
