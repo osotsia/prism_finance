@@ -9,7 +9,7 @@ pub mod display;
 
 #[pyfunction]
 fn rust_core_version() -> &'static str {
-    "0.3.2"
+    "0.3.3"
 }
 
 #[pymodule]
